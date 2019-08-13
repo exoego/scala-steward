@@ -21,6 +21,7 @@ import io.circe.Encoder
 import io.circe.generic.semiauto._
 import org.scalasteward.core.data.{SemVer, Update}
 import org.scalasteward.core.git.Branch
+import org.scalasteward.core.mima.BinaryCompatibility
 import org.scalasteward.core.nurture.UpdateData
 import org.scalasteward.core.repoconfig.RepoConfigAlg
 import org.scalasteward.core.util.Nel
@@ -41,12 +42,14 @@ object NewPullRequestData {
       update: Update,
       login: String,
       artifactIdToUrl: Map[String, String],
-      branchCompareUrl: Option[String]
+      branchCompareUrl: Option[String],
+      compatibility: BinaryCompatibility
   ): String = {
     val artifacts = artifactsWithOptionalUrl(update, artifactIdToUrl)
     val (migrationLabel, appliedMigrations) = migrationNote(update)
-    val labels = Nel.fromList(semVerLabel(update).toList ++ migrationLabel.toList)
-
+    val (compatLabel, compatMessage) = formatCompatibility(compatibility)
+    val labels =
+      Nel.fromList(semVerLabel(update).toList ++ migrationLabel.toList ++ compatLabel.toList)
     s"""|Updates ${artifacts} ${fromTo(update, branchCompareUrl)}.
         |
         |I'll automatically update this PR to resolve conflicts as long as you don't change it yourself.
@@ -63,10 +66,30 @@ object NewPullRequestData {
         |${RepoConfigAlg.configToIgnoreFurtherUpdates(update)}
         |```
         |</details>
+        |${compatMessage.getOrElse("")}
         |${appliedMigrations.getOrElse("")}
         |${labels.fold("")(_.mkString_("labels: ", ", ", ""))}
         |""".stripMargin.trim
   }
+
+  def formatCompatibility(compatibility: BinaryCompatibility): (Option[String], Option[String]) =
+    compatibility match {
+      case BinaryCompatibility.Compatible => (None, None)
+      case BinaryCompatibility.Err(_)     => (None, None)
+      case inc @ BinaryCompatibility.Incompatible(_, problems) =>
+        val message =
+          s"""<details>
+             |<summary>Binary incompatibilities</summary>
+             |
+             |${inc.summary})
+             |You may ignore these if your project do not need to take care of binary incompatibilities.
+             |```
+             |${problems.sorted.toList.mkString("\n")}
+             |```
+             |</details>
+             |""".stripMargin
+        (Some("potential-binary-incompatible"), Some(message))
+    }
 
   def fromTo(update: Update, branchCompareUrl: Option[String]): String = {
     val fromToVersions = s"from ${update.currentVersion} to ${update.nextVersion}"
@@ -127,11 +150,12 @@ object NewPullRequestData {
       branchName: String,
       authorLogin: String,
       artifactIdToUrl: Map[String, String] = Map.empty,
-      branchCompareUrl: Option[String] = None
+      branchCompareUrl: Option[String] = None,
+      binaryIssues: BinaryCompatibility = BinaryCompatibility.Compatible
   ): NewPullRequestData =
     NewPullRequestData(
       title = git.commitMsgFor(data.update),
-      body = bodyFor(data.update, authorLogin, artifactIdToUrl, branchCompareUrl),
+      body = bodyFor(data.update, authorLogin, artifactIdToUrl, branchCompareUrl, binaryIssues),
       head = branchName,
       base = data.baseBranch
     )

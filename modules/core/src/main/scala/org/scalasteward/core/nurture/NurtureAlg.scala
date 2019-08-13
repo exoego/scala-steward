@@ -24,6 +24,7 @@ import org.scalasteward.core.coursier.CoursierAlg
 import org.scalasteward.core.data.{Dependency, Update}
 import org.scalasteward.core.edit.EditAlg
 import org.scalasteward.core.git.{Branch, GitAlg}
+import org.scalasteward.core.mima.MimaAlg
 import org.scalasteward.core.repoconfig.RepoConfigAlg
 import org.scalasteward.core.sbt.SbtAlg
 import org.scalasteward.core.scalafmt.ScalafmtAlg
@@ -48,6 +49,7 @@ final class NurtureAlg[F[_]](
     logger: Logger[F],
     pullRequestRepo: PullRequestRepository[F],
     sbtAlg: SbtAlg[F],
+    mima: MimaAlg[F],
     scalafmtAlg: ScalafmtAlg[F],
     F: Async[F]
 ) {
@@ -153,12 +155,14 @@ final class NurtureAlg[F[_]](
         data.update
       )
       branchName = vcs.createBranch(config.vcsType, data.fork, data.update)
+      compatibility <- mima.backwardBinaryCompatibily(data.update)
       requestData = NewPullRequestData.from(
         data,
         branchName,
         config.vcsLogin,
         artifactIdToUrl,
-        branchCompareUrl
+        branchCompareUrl,
+        compatibility
       )
       pr <- vcsApiAlg.createPullRequest(data.repo, requestData)
       _ <- pullRequestRepo.createOrUpdate(
