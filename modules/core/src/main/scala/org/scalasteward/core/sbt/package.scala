@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,56 +16,36 @@
 
 package org.scalasteward.core
 
+import cats.Functor
 import cats.implicits._
-import cats.effect.{IO, Resource}
-import org.scalasteward.core.data.{Dependency, Version}
-import org.scalasteward.core.io.FileData
-import org.scalasteward.core.sbt.data.{SbtVersion, ScalaVersion}
-import scala.io.Source
+import org.scalasteward.core.data.{ArtifactId, Dependency, GroupId, Version}
+import org.scalasteward.core.io.{FileAlg, FileData}
+import org.scalasteward.core.sbt.data.SbtVersion
 
 package object sbt {
-  val defaultSbtVersion: SbtVersion =
-    SbtVersion(BuildInfo.sbtVersion)
-
-  // Needs manual update
-  val latestSbtVersion_0_13: SbtVersion =
-    SbtVersion("0.13.18")
-
-  val defaultScalaVersion: ScalaVersion =
-    ScalaVersion(BuildInfo.scalaVersion)
-
-  def seriesToSpecificVersion(sbtSeries: SbtVersion): SbtVersion =
-    sbtSeries.value match {
-      case "0.13" => latestSbtVersion_0_13
-      case "1.0"  => defaultSbtVersion
-      case _      => defaultSbtVersion
-    }
+  val defaultScalaBinaryVersion: String =
+    BuildInfo.scalaBinaryVersion
 
   def sbtDependency(sbtVersion: SbtVersion): Option[Dependency] =
     if (sbtVersion.toVersion >= Version("1.0.0"))
-      Some(Dependency("org.scala-sbt", "sbt", "sbt", sbtVersion.value))
+      Some(
+        Dependency(
+          GroupId("org.scala-sbt"),
+          ArtifactId("sbt"),
+          sbtVersion.value
+        )
+      )
     else
       None
-
-  val scalaStewardSbt: FileData =
-    FileData(
-      "scala-steward.sbt",
-      """addSbtPlugin("com.timushev.sbt" % "sbt-updates" % "0.4.2")"""
-    )
 
   val scalaStewardScalafixSbt: FileData =
     FileData(
       "scala-steward-scalafix.sbt",
-      """addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.9.5")"""
+      """addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.9.15")"""
     )
 
-  val stewardPlugin: FileData = {
+  def stewardPlugin[F[_]](implicit fileAlg: FileAlg[F], F: Functor[F]): F[FileData] = {
     val name = "StewardPlugin.scala"
-    // I don't consider reading a resource as side-effect,
-    // so it is OK to call `unsafeRunSync` here.
-    Resource
-      .fromAutoCloseable(IO(Source.fromResource(name)))
-      .use(src => IO(FileData(name, src.mkString)))
-      .unsafeRunSync()
+    fileAlg.readResource(s"org/scalasteward/plugin/$name").map(FileData(name, _))
   }
 }

@@ -1,10 +1,20 @@
 pull_request_rules:
-  - name: automatically merge scala-steward's PRs
+  - name: assign and label scala-steward's PRs
+    conditions:
+      - author=scala-steward
+    actions:
+      assign:
+        users: [fthomas]
+      label:
+        add: [dependency-update]
+  - name: merge scala-steward's PRs
     conditions:
       - author=scala-steward
       - status-success=Travis CI - Pull Request
+      # or, using the legacy travis-ci.org service:
+      # - status-success=continuous-integration/travis-ci/pr
     actions:
       merge:
-        method: merge
-      label:
-        add: [dependency-update]
+        method: squash
+        strict: true
+

@@ -1,15 +1,17 @@
-<img src="https://github.com/fthomas/scala-steward/raw/master/data/images/scala-steward-logo-hex-1.png" width="156px" height="180px" align="right">
+<p align="center">
+  <img src="https://github.com/fthomas/scala-steward/raw/master/data/images/scala-steward-logo-circle-0.png" height="180px">
+</p>
 
 # Scala Steward
 [![Build Status](https://travis-ci.com/fthomas/scala-steward.svg?branch=master)](https://travis-ci.com/fthomas/scala-steward)
 [![codecov](https://codecov.io/gh/fthomas/scala-steward/branch/master/graph/badge.svg)](https://codecov.io/gh/fthomas/scala-steward)
 [![Join the chat at https://gitter.im/fthomas/scala-steward](https://badges.gitter.im/fthomas/scala-steward.svg)](https://gitter.im/fthomas/scala-steward?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/4573461025c642daa4128b659ee54fc9)](https://www.codacy.com/app/fthomas/scala-steward?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=fthomas/scala-steward&amp;utm_campaign=Badge_Grade)
-[![Typelevel project](https://img.shields.io/badge/typelevel-project-brightgreen.svg)](https://typelevel.org/projects/#scala-steward)
-[![Scala Steward badge](https://img.shields.io/badge/Scala_Steward-helping-brightgreen.svg?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAQCAMAAAARSr4IAAAAVFBMVEUAAACHjojlOy5NWlrKzcYRKjGFjIbp293YycuLa3pYY2LSqql4f3pCUFTgSjNodYRmcXUsPD/NTTbjRS+2jomhgnzNc223cGvZS0HaSD0XLjbaSjElhIr+AAAAAXRSTlMAQObYZgAAAHlJREFUCNdNyosOwyAIhWHAQS1Vt7a77/3fcxxdmv0xwmckutAR1nkm4ggbyEcg/wWmlGLDAA3oL50xi6fk5ffZ3E2E3QfZDCcCN2YtbEWZt+Drc6u6rlqv7Uk0LdKqqr5rk2UCRXOk0vmQKGfc94nOJyQjouF9H/wCc9gECEYfONoAAAAASUVORK5CYII=)](https://scala-steward.org)
-[![Docker Pulls](https://img.shields.io/docker/pulls/fthomas/scala-steward.svg?style=flat)](https://hub.docker.com/r/fthomas/scala-steward/)
+[![Follow @ScalaSteward on Twitter](https://img.shields.io/twitter/follow/ScalaSteward.svg?logo=twitter&style=flat&color=blue)](https://twitter.com/ScalaSteward)
+[![Typelevel project](https://img.shields.io/badge/typelevel-project-blue.svg)](https://typelevel.org/projects/#scala-steward)
+[![Scala Steward badge](https://img.shields.io/badge/Scala_Steward-helping-blue.svg?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAQCAMAAAARSr4IAAAAVFBMVEUAAACHjojlOy5NWlrKzcYRKjGFjIbp293YycuLa3pYY2LSqql4f3pCUFTgSjNodYRmcXUsPD/NTTbjRS+2jomhgnzNc223cGvZS0HaSD0XLjbaSjElhIr+AAAAAXRSTlMAQObYZgAAAHlJREFUCNdNyosOwyAIhWHAQS1Vt7a77/3fcxxdmv0xwmckutAR1nkm4ggbyEcg/wWmlGLDAA3oL50xi6fk5ffZ3E2E3QfZDCcCN2YtbEWZt+Drc6u6rlqv7Uk0LdKqqr5rk2UCRXOk0vmQKGfc94nOJyQjouF9H/wCc9gECEYfONoAAAAASUVORK5CYII=)](https://scala-steward.org)
+[![Docker Pulls](https://img.shields.io/docker/pulls/fthomas/scala-steward.svg?style=flat&color=blue)](https://hub.docker.com/r/fthomas/scala-steward/)
 
-Scala Steward is a robot that helps you keeping library dependencies
+Scala Steward is a bot that helps you keeping library dependencies
 and sbt plugins up-to-date.
 
 See also the announcement blog post:
@@ -18,8 +20,8 @@ See also the announcement blog post:
 ## Quick start guide
 
 Open a pull request that adds the GitHub repository of your Scala project
-to [repos.md](https://github.com/fthomas/scala-steward/blob/master/repos.md)
-([edit](https://github.com/fthomas/scala-steward/edit/master/repos.md)).
+to [repos-github.md](https://github.com/scala-steward-org/repos/blob/master/repos-github.md)
+([edit](https://github.com/scala-steward-org/repos/edit/master/repos-github.md)).
 Once that PR is merged, [**@scala-steward**][@scala-steward] will check
 periodically for updates of libraries and plugins in your project and will
 open pull requests for updates it found.
@@ -34,15 +36,17 @@ look like, here are the ones it has created so far:
 * [Merged pull requests]( https://github.com/search?q=author%3Ascala-steward+is%3Amerged+sort%3Aupdated-desc)
   ([compact](             https://github.com/pulls?q=author%3Ascala-steward+is%3Amerged+sort%3Aupdated-desc))
 
-## Wanna have a badge ?
+You can also watch what it is currently doing [here](https://gitstalk.netlify.com/scala-steward).
+
+## Wanna have a badge?
 
 A badge is available to show that Scala Steward is helping your repos.
 Let's spread Scala Steward to keep Scala ecosystem updated.
 
-[![Scala Steward badge](https://img.shields.io/badge/Scala_Steward-helping-brightgreen.svg?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAQCAMAAAARSr4IAAAAVFBMVEUAAACHjojlOy5NWlrKzcYRKjGFjIbp293YycuLa3pYY2LSqql4f3pCUFTgSjNodYRmcXUsPD/NTTbjRS+2jomhgnzNc223cGvZS0HaSD0XLjbaSjElhIr+AAAAAXRSTlMAQObYZgAAAHlJREFUCNdNyosOwyAIhWHAQS1Vt7a77/3fcxxdmv0xwmckutAR1nkm4ggbyEcg/wWmlGLDAA3oL50xi6fk5ffZ3E2E3QfZDCcCN2YtbEWZt+Drc6u6rlqv7Uk0LdKqqr5rk2UCRXOk0vmQKGfc94nOJyQjouF9H/wCc9gECEYfONoAAAAASUVORK5CYII=)](https://scala-steward.org)
+[![Scala Steward badge](https://img.shields.io/badge/Scala_Steward-helping-blue.svg?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAQCAMAAAARSr4IAAAAVFBMVEUAAACHjojlOy5NWlrKzcYRKjGFjIbp293YycuLa3pYY2LSqql4f3pCUFTgSjNodYRmcXUsPD/NTTbjRS+2jomhgnzNc223cGvZS0HaSD0XLjbaSjElhIr+AAAAAXRSTlMAQObYZgAAAHlJREFUCNdNyosOwyAIhWHAQS1Vt7a77/3fcxxdmv0xwmckutAR1nkm4ggbyEcg/wWmlGLDAA3oL50xi6fk5ffZ3E2E3QfZDCcCN2YtbEWZt+Drc6u6rlqv7Uk0LdKqqr5rk2UCRXOk0vmQKGfc94nOJyQjouF9H/wCc9gECEYfONoAAAAASUVORK5CYII=)](https://scala-steward.org)
 
 ```markdown
-[![Scala Steward badge](https://img.shields.io/badge/Scala_Steward-helping-brightgreen.svg?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAQCAMAAAARSr4IAAAAVFBMVEUAAACHjojlOy5NWlrKzcYRKjGFjIbp293YycuLa3pYY2LSqql4f3pCUFTgSjNodYRmcXUsPD/NTTbjRS+2jomhgnzNc223cGvZS0HaSD0XLjbaSjElhIr+AAAAAXRSTlMAQObYZgAAAHlJREFUCNdNyosOwyAIhWHAQS1Vt7a77/3fcxxdmv0xwmckutAR1nkm4ggbyEcg/wWmlGLDAA3oL50xi6fk5ffZ3E2E3QfZDCcCN2YtbEWZt+Drc6u6rlqv7Uk0LdKqqr5rk2UCRXOk0vmQKGfc94nOJyQjouF9H/wCc9gECEYfONoAAAAASUVORK5CYII=)](https://scala-steward.org)
+[![Scala Steward badge](https://img.shields.io/badge/Scala_Steward-helping-blue.svg?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAQCAMAAAARSr4IAAAAVFBMVEUAAACHjojlOy5NWlrKzcYRKjGFjIbp293YycuLa3pYY2LSqql4f3pCUFTgSjNodYRmcXUsPD/NTTbjRS+2jomhgnzNc223cGvZS0HaSD0XLjbaSjElhIr+AAAAAXRSTlMAQObYZgAAAHlJREFUCNdNyosOwyAIhWHAQS1Vt7a77/3fcxxdmv0xwmckutAR1nkm4ggbyEcg/wWmlGLDAA3oL50xi6fk5ffZ3E2E3QfZDCcCN2YtbEWZt+Drc6u6rlqv7Uk0LdKqqr5rk2UCRXOk0vmQKGfc94nOJyQjouF9H/wCc9gECEYfONoAAAAASUVORK5CYII=)](https://scala-steward.org)
 ```
 
 ## Documentation
@@ -56,10 +60,15 @@ The [`docs`](docs) directory contains documentation about these topics:
 
 ## Contributors
 
-Thanks goes to these wonderful people:
+Thanks goes to these wonderful people for contributing to Scala Steward:
 
+* [Adam Fraser](https://github.com/adamgfraser)
 * [Alex](https://github.com/jhnsmth)
+* [Alex Klibisz](https://github.com/alexklibisz)
+* [Andrea](https://github.com/Andrea)
+* [Andrea Mistretta](https://github.com/andreami)
 * [Anil Kumar Myla](https://github.com/anilkumarmyla)
+* [Arjun Dhawan](https://github.com/arjun-1)
 * [Arulselvan Madhavan](https://github.com/ArulselvanMadhavan)
 * [Bayram Kiran](https://github.com/kiranbayram)
 * [Cédric Chantepie](https://github.com/cchantep)
@@ -67,19 +76,32 @@ Thanks goes to these wonderful people:
 * [Dale Wijnand](https://github.com/dwijnand)
 * [Daniel Pfeiffer](https://github.com/dpfeiffer)
 * [David Francoeur](https://github.com/daddykotex)
+* [Eldar Yusupov](https://github.com/eyusupov)
+* [Erik Erlandson](https://github.com/erikerlandson)
+* [Erlend Hamnaberg](https://github.com/hamnis)
 * [Fabian](https://github.com/fg-devs)
+* [Felix Dietze](https://github.com/fdietze)
 * [Filipe Regadas](https://github.com/regadas)
 * [Frank S. Thomas](https://github.com/fthomas)
+* [Georgy Davityan](https://github.com/implmnt)
+* [Grzegorz Kocur](https://github.com/gkocur)
+* [Guillaume Martres](https://github.com/smarter)
+* [Ingar Abrahamsen](https://github.com/ingarabr)
 * [Jakub Kozłowski](https://github.com/kubukoz)
 * [JCollier](https://github.com/Slakah)
 * [Jeff Martin](https://github.com/custommonkey)
+* [Jichao Ouyang](https://github.com/jcouyang)
 * [kalejami](https://github.com/kalejami)
 * [KAWACHI Takashi](https://github.com/tkawachi)
 * [kenji yoshida](https://github.com/xuwei-k)
+* [Lars Hupel](https://github.com/larsrh)
 * [Manuel Cueto](https://github.com/manuelcueto)
+* [Marco Zühlke](https://github.com/mzuehlke) 
 * [Mark Canlas](https://github.com/mcanlas)
+* [MaT1g3R](https://github.com/MaT1g3R)
 * [Michael Wizner](https://github.com/mwz)
 * [Michel Daviot](https://github.com/tyrcho)
+* [miguelpuyol](https://github.com/miguelpuyol)
 * [nafg](https://github.com/nafg)
 * [Philippus Baalman](https://github.com/Philippus)
 * [Piotr Gabara](https://github.com/pgabara)
@@ -90,7 +112,10 @@ Thanks goes to these wonderful people:
 * [TATSUNO Yasuhiro](https://github.com/exoego)
 * [Thomas Heslin](https://github.com/tjheslin1)
 * [Thomas Kaliakos](https://github.com/thomaska)
+* [Victor Viale](https://github.com/Koroeskohr)
 * [Yan](https://github.com/yaroot)
+* [Yoan Alvarez-Vanhard](https://github.com/tyoras)
+* [Zack Powers](https://github.com/Milyardo)
 * [Zelenya](https://github.com/Zelenya)
 
 ## Community
@@ -99,17 +124,32 @@ The following companies are using Scala Steward to manage their dependencies.
 Using Scala Steward in your company and don't see it listed here?
 Consider creating PR to add your company to the list and join the community.
 
+* [Adform](https://site.adform.com/)
+* [AutoScout24](https://www.autoscout24.de/)
+* [Besedo](https://www.besedo.com/)
+* [Bitrock](http://www.bitrock.it/)
 * [Chartboost](https://www.chartboost.com/)
 * [Colisweb](https://www.colisweb.com/)
+* [commercetools](https://docs.commercetools.com/)
+* [Evolution Gaming](https://www.evolutiongaming.com/)
 * [Firstbird](https://firstbird.com)
+* [Hellosoda](https://hellosoda.com/)
 * [HolidayCheck](https://github.com/holidaycheck)
 * [iAdvize](https://www.iadvize.com/en/)
+* [LeadIQ](https://leadiq.com/)
+* [Lightbend](https://www.lightbend.com/)
+* [Ocado Technology](https://ocadotechnology.com/)
+* [PlayQ](https://www.playq.com/)
+* [Rewards Network](https://www.rewardsnetwork.com/)
 * [Septeni Original](https://www.septeni-original.co.jp)
 * [SlamData](https://slamdata.com/)
 * [Snowplow Analytics](https://snowplowanalytics.com/)
-* [SpringerNature](https://www.springernature.com)
 * [SoftwareMill](https://softwaremill.com)
+* [Spotify](https://www.spotify.com)
+* [SpringerNature](https://www.springernature.com)
 * [Tegonal GmbH](https://tegonal.com)
+* [Tupl](https://www.tupl.com)
+* [wehkamp](https://www.wehkamp.nl/)
 * [Zalando](https://en.zalando.de/)
 
 ## Participation
@@ -121,11 +161,13 @@ environments for everyone.
 ## Credit
 
 Scala Steward wouldn't exist without the great [sbt-updates][sbt-updates]
-plugin to determine dependency updates and a bunch of [Typelevel][Typelevel]
-and other Scala [libraries](https://github.com/fthomas/scala-steward/blob/master/project/Dependencies.scala).
+plugin which was used until version 0.6 to find dependency updates.
 
-[**@scala-steward**][@scala-steward]'s cute profile picture is by
-[@impurepics](https://twitter.com/impurepics/).
+Thanks goes also to [**@impurepics**](https://twitter.com/impurepics)
+for [**@scala-steward**][@scala-steward]'s cute profile picture and to
+the maintainers and contributors of the various
+[libraries](https://github.com/fthomas/scala-steward/blob/master/project/Dependencies.scala)
+this project depends on.
 
 ## License
 
@@ -135,4 +177,3 @@ Scala Steward is licensed under the
 [CoC]: https://github.com/fthomas/scala-steward/blob/master/CODE_OF_CONDUCT.md
 [@scala-steward]: https://github.com/scala-steward
 [sbt-updates]: https://github.com/rtimush/sbt-updates
-[Typelevel]: https://typelevel.org/

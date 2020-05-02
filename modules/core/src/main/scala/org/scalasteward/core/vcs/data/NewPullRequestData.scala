@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,15 @@ package org.scalasteward.core.vcs.data
 import cats.implicits._
 import io.circe.Encoder
 import io.circe.generic.semiauto._
-import org.scalasteward.core.data.{SemVer, Update}
+import org.http4s.Uri
+import org.scalasteward.core.BuildInfo
+import org.scalasteward.core.data.{GroupId, ReleaseRelatedUrl, SemVer, Update}
+import org.scalasteward.core.git
 import org.scalasteward.core.git.Branch
 import org.scalasteward.core.nurture.UpdateData
 import org.scalasteward.core.repoconfig.RepoConfigAlg
-import org.scalasteward.core.util.Nel
-import org.scalasteward.core.{git, scalafix}
+import org.scalasteward.core.scalafix.Migration
+import org.scalasteward.core.util.{Details, Nel}
 
 final case class NewPullRequestData(
     title: String,
@@ -39,81 +42,109 @@ object NewPullRequestData {
 
   def bodyFor(
       update: Update,
-      login: String,
-      artifactIdToUrl: Map[String, String],
-      branchCompareUrl: Option[String]
+      artifactIdToUrl: Map[String, Uri],
+      releaseRelatedUrls: List[ReleaseRelatedUrl],
+      migrations: List[Migration]
   ): String = {
     val artifacts = artifactsWithOptionalUrl(update, artifactIdToUrl)
-    val (migrationLabel, appliedMigrations) = migrationNote(update)
-    val labels = Nel.fromList(semVerLabel(update).toList ++ migrationLabel.toList)
+    val (migrationLabel, appliedMigrations) = migrationNote(migrations)
+    val details = ignoreFutureUpdates(update) :: appliedMigrations.toList
+    val labels =
+      Nel.fromList(List(updateType(update)) ++ semVerLabel(update).toList ++ migrationLabel.toList)
 
-    s"""|Updates ${artifacts} ${fromTo(update, branchCompareUrl)}.
+    s"""|Updates $artifacts ${fromTo(update)}.
+        |${releaseNote(releaseRelatedUrls).getOrElse("")}
         |
         |I'll automatically update this PR to resolve conflicts as long as you don't change it yourself.
         |
-        |If you'd like to skip this version, you can just close this PR. If you have any feedback, just mention @$login in the comments below.
+        |If you'd like to skip this version, you can just close this PR. If you have any feedback, just mention me in the comments below.
+        |
+        |Configure Scala Steward for your repository with a [`${RepoConfigAlg.repoConfigBasename}`](https://github.com/fthomas/scala-steward/blob/${BuildInfo.gitHeadCommit}/docs/repo-specific-configuration.md) file.
         |
         |Have a fantastic day writing Scala!
         |
-        |<details>
-        |<summary>Ignore future updates</summary>
+        |${details.map(_.toHtml).mkString("\n")}
         |
-        |Add this to your `${RepoConfigAlg.repoConfigBasename}` file to ignore future updates of this dependency:
-        |```
-        |${RepoConfigAlg.configToIgnoreFurtherUpdates(update)}
-        |```
-        |</details>
-        |${appliedMigrations.getOrElse("")}
         |${labels.fold("")(_.mkString_("labels: ", ", ", ""))}
         |""".stripMargin.trim
   }
 
-  def fromTo(update: Update, branchCompareUrl: Option[String]): String = {
-    val fromToVersions = s"from ${update.currentVersion} to ${update.nextVersion}"
-    branchCompareUrl match {
-      case None             => fromToVersions
-      case Some(compareUrl) => s"[${fromToVersions}](${compareUrl})"
-    }
+  def updateType(update: Update): String = {
+    val dependencies = update.dependencies
+    if (dependencies.forall(_.configurations.contains("test")))
+      "test-library-update"
+    else if (dependencies.forall(_.configurations.contains("scalafix-rule")))
+      "scalafix-rule-update"
+    else if (dependencies.forall(_.sbtVersion.isDefined))
+      "sbt-plugin-update"
+    else
+      "library-update"
   }
 
-  def artifactsWithOptionalUrl(update: Update, artifactIdToUrl: Map[String, String]): String =
+  def releaseNote(releaseRelatedUrls: List[ReleaseRelatedUrl]): Option[String] =
+    if (releaseRelatedUrls.isEmpty) None
+    else
+      releaseRelatedUrls
+        .map { url =>
+          url match {
+            case ReleaseRelatedUrl.CustomChangelog(url) => s"[Changelog](${url.renderString})"
+            case ReleaseRelatedUrl.CustomReleaseNotes(url) =>
+              s"[Release Notes](${url.renderString})"
+            case ReleaseRelatedUrl.GitHubReleaseNotes(url) =>
+              s"[GitHub Release Notes](${url.renderString})"
+            case ReleaseRelatedUrl.VersionDiff(url) => s"[Version Diff](${url.renderString})"
+          }
+        }
+        .mkString(" - ")
+        .some
+
+  def fromTo(update: Update): String =
+    s"from ${update.currentVersion} to ${update.nextVersion}"
+
+  def artifactsWithOptionalUrl(update: Update, artifactIdToUrl: Map[String, Uri]): String =
     update match {
-      case s: Update.Single => artifactWithOptionalUrl(s.groupId, s.artifactId, artifactIdToUrl)
+      case s: Update.Single =>
+        artifactWithOptionalUrl(s.groupId, s.artifactId.name, artifactIdToUrl)
       case g: Update.Group =>
-        g.artifactIds
-          .map(
-            artifactId => s"* ${artifactWithOptionalUrl(g.groupId, artifactId, artifactIdToUrl)}\n"
+        g.crossDependencies
+          .map(crossDependency =>
+            s"* ${artifactWithOptionalUrl(g.groupId, crossDependency.head.artifactId.name, artifactIdToUrl)}\n"
           )
           .mkString_("\n", "", "\n")
     }
 
   def artifactWithOptionalUrl(
-      groupId: String,
+      groupId: GroupId,
       artifactId: String,
-      artifactId2Url: Map[String, String]
+      artifactId2Url: Map[String, Uri]
   ): String =
     artifactId2Url.get(artifactId) match {
-      case Some(url) => s"[${groupId}:${artifactId}](${url})"
-      case None      => s"${groupId}:${artifactId}"
+      case Some(url) => s"[$groupId:$artifactId](${url.renderString})"
+      case None      => s"$groupId:$artifactId"
     }
 
-  def migrationNote(update: Update): (Option[String], Option[String]) = {
-    val migrations = scalafix.findMigrations(update)
-    if (migrations.isEmpty)
-      (None, None)
+  def ignoreFutureUpdates(update: Update): Details =
+    Details(
+      "Ignore future updates",
+      s"""|Add this to your `${RepoConfigAlg.repoConfigBasename}` file to ignore future updates of this dependency:
+          |```
+          |${RepoConfigAlg.configToIgnoreFurtherUpdates(update)}
+          |```
+          |""".stripMargin.trim
+    )
+
+  def migrationNote(migrations: List[Migration]): (Option[String], Option[Details]) =
+    if (migrations.isEmpty) (None, None)
     else
       (
         Some("scalafix-migrations"),
         Some(
-          s"""<details>
-             |<summary>Applied Migrations</summary>
-             |
-             |${migrations.flatMap(_.rewriteRules.toList).map(rule => s"* ${rule}").mkString("\n")}
-             |</details>
-             |""".stripMargin.trim
+          Details(
+            "Applied Migrations",
+            migrations.flatMap(_.rewriteRules.toList).map(rule => s"* $rule").mkString("\n")
+          )
         )
       )
-  }
 
   def semVerLabel(update: Update): Option[String] =
     for {
@@ -125,13 +156,18 @@ object NewPullRequestData {
   def from(
       data: UpdateData,
       branchName: String,
-      authorLogin: String,
-      artifactIdToUrl: Map[String, String] = Map.empty,
-      branchCompareUrl: Option[String] = None
+      artifactIdToUrl: Map[String, Uri] = Map.empty,
+      releaseRelatedUrls: List[ReleaseRelatedUrl] = List.empty,
+      migrations: List[Migration] = List.empty
   ): NewPullRequestData =
     NewPullRequestData(
-      title = git.commitMsgFor(data.update),
-      body = bodyFor(data.update, authorLogin, artifactIdToUrl, branchCompareUrl),
+      title = git.commitMsgFor(data.update, data.repoConfig.commits),
+      body = bodyFor(
+        data.update,
+        artifactIdToUrl,
+        releaseRelatedUrls,
+        migrations
+      ),
       head = branchName,
       base = data.baseBranch
     )

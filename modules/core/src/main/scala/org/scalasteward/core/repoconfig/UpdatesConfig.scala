@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,29 +16,61 @@
 
 package org.scalasteward.core.repoconfig
 
-import cats.implicits._
+import eu.timepit.refined.types.numeric.PosInt
 import io.circe.generic.extras.Configuration
 import io.circe.generic.extras.semiauto._
+import io.circe.refined._
 import io.circe.{Decoder, Encoder}
 import org.scalasteward.core.data.Update
-import org.scalasteward.core.update.FilterAlg.{FilterResult, IgnoredByConfig, NotAllowedByConfig}
+import org.scalasteward.core.update.FilterAlg.{
+  FilterResult,
+  IgnoredByConfig,
+  NotAllowedByConfig,
+  VersionPinnedByConfig
+}
+import org.scalasteward.core.util.Nel
 
 final case class UpdatesConfig(
+    pin: List[UpdatePattern] = List.empty,
     allow: List[UpdatePattern] = List.empty,
-    ignore: List[UpdatePattern] = List.empty
+    ignore: List[UpdatePattern] = List.empty,
+    limit: Option[PosInt] = None,
+    includeScala: Option[Boolean] = None,
+    fileExtensions: List[String] = List.empty
 ) {
   def keep(update: Update.Single): FilterResult =
-    isAllowed(update) *> isIgnored(update)
+    isAllowed(update).flatMap(isPinned).flatMap(isIgnored)
+
+  def fileExtensionsOrDefault: Set[String] =
+    if (fileExtensions.isEmpty)
+      UpdatesConfig.defaultFileExtensions
+    else
+      fileExtensions.toSet
 
   private def isAllowed(update: Update.Single): FilterResult = {
-    val m = UpdatePattern.findMatch(allow, update)
-    if (m.byArtifactId.isEmpty || m.byVersion.nonEmpty) Right(update)
+    val m = UpdatePattern.findMatch(allow, update, include = true)
+    if (m.filteredVersions.nonEmpty) {
+      Right(update.copy(newerVersions = Nel.fromListUnsafe(m.filteredVersions)))
+    } else if (allow.isEmpty)
+      Right(update)
     else Left(NotAllowedByConfig(update))
   }
 
+  private def isPinned(update: Update.Single): FilterResult = {
+    val m = UpdatePattern.findMatch(pin, update, include = true)
+    if (m.filteredVersions.nonEmpty) {
+      Right(update.copy(newerVersions = Nel.fromListUnsafe(m.filteredVersions)))
+    } else if (m.byArtifactId.isEmpty)
+      Right(update)
+    else Left(VersionPinnedByConfig(update))
+  }
+
   private def isIgnored(update: Update.Single): FilterResult = {
-    val m = UpdatePattern.findMatch(ignore, update)
-    if (m.byVersion.nonEmpty) Left(IgnoredByConfig(update)) else Right(update)
+    val m = UpdatePattern.findMatch(ignore, update, include = false)
+    if (m.filteredVersions.nonEmpty)
+      Right(update.copy(newerVersions = Nel.fromListUnsafe(m.filteredVersions)))
+    else
+      Left(IgnoredByConfig(update))
   }
 }
 
@@ -47,8 +79,15 @@ object UpdatesConfig {
     Configuration.default.withDefaults
 
   implicit val updatesConfigDecoder: Decoder[UpdatesConfig] =
-    deriveDecoder
+    deriveConfiguredDecoder
 
   implicit val updatesConfigEncoder: Encoder[UpdatesConfig] =
-    deriveEncoder
+    deriveConfiguredEncoder
+
+  val defaultIncludeScala: Boolean = false
+
+  val defaultFileExtensions: Set[String] = Set(".scala", ".sbt", ".sbt.shared", ".sc", ".yml")
+
+  // prevent IntelliJ from removing the import of io.circe.refined._
+  locally(refinedDecoder: Decoder[PosInt])
 }

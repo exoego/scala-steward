@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,62 +16,135 @@
 
 package org.scalasteward.core.coursier
 
-import cats.Parallel
 import cats.effect._
 import cats.implicits._
+import cats.{Applicative, Parallel}
+import coursier.cache.{CachePolicy, FileCache}
+import coursier.core.{Authentication, Project}
 import coursier.interop.cats._
-import org.scalasteward.core.data.Dependency
-import scala.concurrent.ExecutionContext
+import coursier.{Fetch, Info, Module, ModuleName, Organization}
+import io.chrisdavenport.log4cats.Logger
+import org.http4s.Uri
+import org.scalasteward.core.data.Resolver.Credentials
+import org.scalasteward.core.data.{Dependency, Resolver, Scope, Version}
 
+/** An interface to [[https://get-coursier.io Coursier]] used for
+  * fetching dependency versions and metadata.
+  */
 trait CoursierAlg[F[_]] {
-  def getArtifactUrl(dependency: Dependency): F[Option[String]]
-  def getArtifactIdUrlMapping(dependencies: List[Dependency]): F[Map[String, String]]
+  def getArtifactUrl(dependency: Scope.Dependency): F[Option[Uri]]
+
+  def getVersions(dependency: Dependency, resolver: Resolver): F[List[Version]]
+
+  final def getArtifactIdUrlMapping(dependencies: Scope.Dependencies)(
+      implicit F: Applicative[F]
+  ): F[Map[String, Uri]] =
+    dependencies.sequence
+      .traverseFilter(dep => getArtifactUrl(dep).map(_.map(dep.value.artifactId.name -> _)))
+      .map(_.toMap)
 }
 
 object CoursierAlg {
   def create[F[_]](
       implicit
+      contextShift: ContextShift[F],
+      logger: Logger[F],
       F: Sync[F]
   ): CoursierAlg[F] = {
-    implicit val P = Parallel.identity[F]
-    implicit val cs: ContextShift[F] = new ContextShift[F] {
-      override def shift: F[Unit] = F.unit
-      override def evalOn[A](ec: ExecutionContext)(fa: F[A]): F[A] = F.defer(fa)
-    }
-    val cache = coursier.cache.FileCache[F]()
-    val fetch = coursier.Fetch[F](cache)
+    implicit val parallel: Parallel.Aux[F, F] = Parallel.identity[F]
+
+    val fetch: Fetch[F] = Fetch[F](FileCache[F]())
+
+    val cacheNoTtl: FileCache[F] =
+      FileCache[F]().withTtl(None).withCachePolicies(List(CachePolicy.Update))
+
     new CoursierAlg[F] {
-      override def getArtifactUrl(dependency: Dependency): F[Option[String]] = {
-        val module = coursier.Module(
-          coursier.Organization(dependency.groupId),
-          coursier.ModuleName(dependency.artifactIdCross)
-        )
-        for {
-          maybeFetchResult <- fetch
-            .addDependencies(
-              coursier.Dependency.of(module, dependency.version).withTransitive(false)
-            )
-            .addArtifactTypes(coursier.Type.pom)
-            .ioResult
-            .map(Option.apply)
-            .recover {
-              case _: coursier.error.ResolutionError => None
+      override def getArtifactUrl(dependency: Scope.Dependency): F[Option[Uri]] =
+        convertToCoursierTypes(dependency).flatMap((getArtifactUrlImpl _).tupled)
+
+      private def getArtifactUrlImpl(
+          dependency: coursier.Dependency,
+          repositories: List[coursier.Repository]
+      ): F[Option[Uri]] = {
+        val fetchArtifacts = fetch
+          .withArtifactTypes(Set(coursier.Type.pom, coursier.Type.ivy))
+          .withDependencies(List(dependency))
+          .withRepositories(repositories)
+        fetchArtifacts.ioResult.attempt.flatMap {
+          case Left(throwable) =>
+            logger.debug(throwable)(s"Failed to fetch artifacts of $dependency").as(None)
+          case Right(result) =>
+            val maybeProject = result.resolution.projectCache
+              .get(dependency.moduleVersion)
+              .map { case (_, project) => project }
+            maybeProject.traverseFilter { project =>
+              getScmUrlOrHomePage(project.info) match {
+                case Some(url) => F.pure(Some(url))
+                case None =>
+                  getParentDependency(project).traverseFilter(getArtifactUrlImpl(_, repositories))
+              }
             }
-        } yield {
-          for {
-            result <- maybeFetchResult
-            (_, project) <- result.resolution.projectCache.get((module, dependency.version))
-            maybeScmUrl = project.info.scm.flatMap(_.url).filter(_.nonEmpty)
-            maybeHomepage = Option(project.info.homePage).filter(_.nonEmpty)
-            url <- maybeScmUrl.orElse(maybeHomepage)
-          } yield url
         }
       }
 
-      override def getArtifactIdUrlMapping(dependencies: List[Dependency]): F[Map[String, String]] =
-        dependencies
-          .traverseFilter(dep => getArtifactUrl(dep).map(_.map(dep.artifactId -> _)))
-          .map(_.toMap)
+      override def getVersions(dependency: Dependency, resolver: Resolver): F[List[Version]] =
+        toCoursierRepository(resolver) match {
+          case Left(message) =>
+            logger.error(message) >> F.raiseError(new Throwable(message))
+          case Right(repository) =>
+            val module = toCoursierModule(dependency)
+            repository.versions(module, cacheNoTtl.fetch)(coursierMonadFromCats(F)).run.flatMap {
+              case Left(message)        => F.raiseError(new Throwable(message))
+              case Right((versions, _)) => F.pure(versions.available.map(Version.apply).sorted)
+            }
+        }
+
+      private def convertToCoursierTypes(
+          dependency: Scope.Dependency
+      ): F[(coursier.Dependency, List[coursier.Repository])] =
+        dependency.resolvers.traverseFilter(convertResolver).map { repositories =>
+          (toCoursierDependency(dependency.value), repositories)
+        }
+
+      private def convertResolver(resolver: Resolver): F[Option[coursier.Repository]] =
+        toCoursierRepository(resolver) match {
+          case Right(repository) => F.pure(Some(repository))
+          case Left(message)     => logger.error(s"Failed to convert $resolver: $message").as(None)
+        }
     }
   }
+
+  private def toCoursierDependency(dependency: Dependency): coursier.Dependency =
+    coursier.Dependency(toCoursierModule(dependency), dependency.version).withTransitive(false)
+
+  private def toCoursierModule(dependency: Dependency): Module =
+    Module(
+      Organization(dependency.groupId.value),
+      ModuleName(dependency.artifactId.crossName),
+      dependency.attributes
+    )
+
+  private def toCoursierRepository(resolver: Resolver): Either[String, coursier.Repository] =
+    resolver match {
+      case Resolver.MavenRepository(_, location, creds) =>
+        Right(coursier.maven.MavenRepository.apply(location, creds.map(toCoursierAuthentication)))
+      case Resolver.IvyRepository(_, pattern, creds) =>
+        coursier.ivy.IvyRepository
+          .parse(pattern, authentication = creds.map(toCoursierAuthentication))
+    }
+
+  private def toCoursierAuthentication(credentials: Credentials): Authentication =
+    Authentication(credentials.user, credentials.pass)
+
+  private def getParentDependency(project: Project): Option[coursier.Dependency] =
+    project.parent.map {
+      case (module, version) =>
+        coursier.Dependency(module, version).withTransitive(false)
+    }
+
+  private def getScmUrlOrHomePage(info: Info): Option[Uri] =
+    (info.scm.flatMap(_.url).toList :+ info.homePage)
+      .filterNot(url => url.isEmpty || url.startsWith("git@") || url.startsWith("git:"))
+      .flatMap(Uri.fromString(_).toList.filter(_.scheme.isDefined))
+      .headOption
 }

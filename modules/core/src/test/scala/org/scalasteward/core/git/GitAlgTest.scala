@@ -4,7 +4,7 @@ import better.files.File
 import cats.Monad
 import cats.effect.IO
 import cats.implicits._
-import org.http4s.Http4sLiteralSyntax
+import org.http4s.syntax.literals._
 import org.scalasteward.core.TestInstances.ioLogger
 import org.scalasteward.core.io.FileAlgTest.ioFileAlg
 import org.scalasteward.core.io.ProcessAlgTest.ioProcessAlg
@@ -13,9 +13,10 @@ import org.scalasteward.core.mock.MockContext._
 import org.scalasteward.core.mock.MockState
 import org.scalasteward.core.util.Nel
 import org.scalasteward.core.vcs.data.Repo
-import org.scalatest.{FunSuite, Matchers}
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
 
-class GitAlgTest extends FunSuite with Matchers {
+class GitAlgTest extends AnyFunSuite with Matchers {
   implicit val workspaceAlg: WorkspaceAlg[IO] = WorkspaceAlg.create[IO]
   val ioGitAlg: GitAlg[IO] = GitAlg.create[IO]
 
@@ -88,7 +89,7 @@ class GitAlgTest extends FunSuite with Matchers {
           "upstream",
           "http://github.com/fthomas/datapackage"
         ),
-        List(askPass, repoDir, "git", "fetch", "upstream"),
+        List(askPass, repoDir, "git", "fetch", "--tags", "upstream", "master"),
         List(askPass, repoDir, "git", "checkout", "-B", "master", "--track", "upstream/master"),
         List(askPass, repoDir, "git", "merge", "upstream/master"),
         List(askPass, repoDir, "git", "push", "--force", "--set-upstream", "origin", "master")
@@ -115,11 +116,13 @@ class GitAlgTest extends FunSuite with Matchers {
       master = Branch("master")
       branch = Branch("conflicts-yes")
       c1 <- ioGitAlg.hasConflicts(repo, branch, master)
+      m1 <- ioGitAlg.isMerged(repo, master, branch)
       _ <- ioGitAlg.checkoutBranch(repo, branch)
       _ <- ioGitAlg.mergeTheirs(repo, master)
       c2 <- ioGitAlg.hasConflicts(repo, branch, master)
-    } yield (c1, c2)
-    p.unsafeRunSync() shouldBe ((true, false))
+      m2 <- ioGitAlg.isMerged(repo, master, branch)
+    } yield (c1, m1, c2, m2)
+    p.unsafeRunSync() shouldBe ((true, false, false, true))
   }
 }
 

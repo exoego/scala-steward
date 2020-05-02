@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,25 +16,19 @@
 
 package org.scalasteward.core.repocache
 
+import io.circe.Codec
 import io.circe.generic.semiauto._
-import io.circe.{Decoder, Encoder}
-import org.scalasteward.core.data.{Dependency, Version}
+import org.scalasteward.core.data.{DependencyInfo, Scope}
 import org.scalasteward.core.git.Sha1
 import org.scalasteward.core.repoconfig.RepoConfig
-import org.scalasteward.core.sbt.data.SbtVersion
 
 final case class RepoCache(
     sha1: Sha1,
-    dependencies: List[Dependency],
-    maybeSbtVersion: Option[SbtVersion],
-    maybeScalafmtVersion: Option[Version],
+    dependencyInfos: List[Scope[List[DependencyInfo]]],
     maybeRepoConfig: Option[RepoConfig]
 )
 
 object RepoCache {
-  implicit val repoCacheDecoder: Decoder[RepoCache] =
-    deriveDecoder
-
-  implicit val repoCacheEncoder: Encoder[RepoCache] =
-    deriveEncoder
+  implicit val repoCacheCodec: Codec[RepoCache] =
+    deriveCodec
 }

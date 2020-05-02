@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,11 +62,11 @@ private[http4s] object GitlabJsonCodec {
   }
   implicit val repoOutDecoder: Decoder[RepoOut] = Decoder.instance { c =>
     for {
-      name <- c.downField("name").as[String]
+      name <- c.downField("path").as[String]
       owner <- c
         .downField("owner")
         .as[UserOut]
-        .orElse(c.downField("namespace").downField("name").as[String].map(UserOut(_)))
+        .orElse(c.downField("namespace").downField("full_path").as[String].map(UserOut(_)))
       cloneUrl <- c.downField("http_url_to_repo").as[Uri]
       parent <- c
         .downField("forked_from_project")
@@ -109,6 +109,9 @@ class Http4sGitLabApiAlg[F[_]: MonadThrowable](
       .postWithBody[RepoOut, ForkPayload](url.createFork(repo), data, modify(repo))
       .recoverWith {
         case UnexpectedResponse(_, _, _, Status.Conflict, _) => getRepo(userOwnedRepo)
+        // workaround for https://gitlab.com/gitlab-org/gitlab-ce/issues/65275
+        // see also https://github.com/fthomas/scala-steward/pull/761
+        case UnexpectedResponse(_, _, _, Status.NotFound, _) => getRepo(userOwnedRepo)
       }
   }
 

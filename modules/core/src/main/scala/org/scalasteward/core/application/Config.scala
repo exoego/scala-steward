@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package org.scalasteward.core.application
 import better.files._
 import cats.effect.Sync
 import org.http4s.Uri
+import org.http4s.Uri.UserInfo
 import org.scalasteward.core.application.Cli.EnvVar
 import org.scalasteward.core.git.Author
 import org.scalasteward.core.util
@@ -60,13 +61,16 @@ final case class Config(
     disableSandbox: Boolean,
     doNotFork: Boolean,
     ignoreOptsFiles: Boolean,
-    keepCredentials: Boolean,
     envVars: List[EnvVar],
-    pruneRepos: Boolean,
-    processTimeout: FiniteDuration
+    processTimeout: FiniteDuration,
+    scalafixMigrations: Option[File],
+    groupMigrations: Option[File],
+    cacheTtl: FiniteDuration,
+    cacheMissDelay: FiniteDuration,
+    bitbucketServerUseDefaultReviewers: Boolean
 ) {
   def vcsUser[F[_]](implicit F: Sync[F]): F[AuthenticatedUser] = {
-    val urlWithUser = util.uri.withUserInfo.set(vcsLogin)(vcsApiHost).renderString
+    val urlWithUser = util.uri.withUserInfo.set(UserInfo(vcsLogin, None))(vcsApiHost).renderString
     val prompt = s"Password for '$urlWithUser': "
     F.delay {
       val password = Process(List(gitAskPass.pathAsString, prompt)).!!.trim
@@ -92,10 +96,13 @@ object Config {
         disableSandbox = args.disableSandbox,
         doNotFork = args.doNotFork,
         ignoreOptsFiles = args.ignoreOptsFiles,
-        keepCredentials = args.keepCredentials,
         envVars = args.envVar,
-        pruneRepos = args.pruneRepos,
-        processTimeout = args.processTimeout
+        processTimeout = args.processTimeout,
+        scalafixMigrations = args.scalafixMigrations.map(_.toFile),
+        groupMigrations = args.groupMigrations.map(_.toFile),
+        cacheTtl = args.cacheTtl,
+        cacheMissDelay = args.cacheMissDelay,
+        bitbucketServerUseDefaultReviewers = args.bitbucketServerUseDefaultReviewers
       )
     }
 }

@@ -1,22 +1,30 @@
 package org.scalasteward.core.mock
 
 import better.files.File
+import cats.Parallel
 import cats.effect.Sync
 import org.http4s.Uri
+import org.scalasteward.core.TestInstances.ioContextShift
 import org.scalasteward.core.application.Cli.EnvVar
 import org.scalasteward.core.application.{Config, SupportedVCS}
-import org.scalasteward.core.coursier.CoursierAlg
+import org.scalasteward.core.coursier.{CoursierAlg, VersionsCache}
 import org.scalasteward.core.edit.EditAlg
 import org.scalasteward.core.git.{Author, GitAlg}
 import org.scalasteward.core.io.{MockFileAlg, MockProcessAlg, MockWorkspaceAlg}
+import org.scalasteward.core.nurture.PullRequestRepository
+import org.scalasteward.core.persistence.JsonKeyValueStore
+import org.scalasteward.core.repocache.RepoCacheRepository
 import org.scalasteward.core.repoconfig.RepoConfigAlg
 import org.scalasteward.core.sbt.SbtAlg
+import org.scalasteward.core.scalafix.MigrationAlg
 import org.scalasteward.core.scalafmt.ScalafmtAlg
-import org.scalasteward.core.update.FilterAlg
-import org.scalasteward.core.util.{BracketThrowable, DateTimeAlg, LogAlg}
+import org.scalasteward.core.update.{FilterAlg, PruningAlg, UpdateAlg}
+import org.scalasteward.core.util.uri._
+import org.scalasteward.core.util.{BracketThrowable, DateTimeAlg}
 import org.scalasteward.core.vcs.VCSRepoAlg
 import org.scalasteward.core.vcs.data.AuthenticatedUser
 import scala.concurrent.duration._
+import org.scalasteward.core.update.GroupMigrations
 
 object MockContext {
   implicit val config: Config = Config(
@@ -33,19 +41,23 @@ object MockContext {
     disableSandbox = false,
     doNotFork = false,
     ignoreOptsFiles = false,
-    keepCredentials = false,
     envVars = List(
       EnvVar("TEST_VAR", "GREAT"),
       EnvVar("ANOTHER_TEST_VAR", "ALSO_GREAT")
     ),
-    pruneRepos = false,
-    processTimeout = 10.minutes
+    processTimeout = 10.minutes,
+    scalafixMigrations = None,
+    groupMigrations = None,
+    cacheTtl = 1.hour,
+    cacheMissDelay = 0.milliseconds,
+    bitbucketServerUseDefaultReviewers = false
   )
 
   implicit val mockEffBracketThrowable: BracketThrowable[MockEff] = Sync[MockEff]
+  implicit val mockEffParallel: Parallel[MockEff] = Parallel.identity
 
   implicit val fileAlg: MockFileAlg = new MockFileAlg
-  implicit val logger: MockLogger = new MockLogger
+  implicit val mockLogger: MockLogger = new MockLogger
   implicit val processAlg: MockProcessAlg = new MockProcessAlg
   implicit val workspaceAlg: MockWorkspaceAlg = new MockWorkspaceAlg
 
@@ -53,11 +65,22 @@ object MockContext {
   implicit val dateTimeAlg: DateTimeAlg[MockEff] = DateTimeAlg.create
   implicit val gitAlg: GitAlg[MockEff] = GitAlg.create
   implicit val user: AuthenticatedUser = AuthenticatedUser("scala-steward", "token")
-  implicit val gitHubRepoAlg: VCSRepoAlg[MockEff] = VCSRepoAlg.create(config, gitAlg)
-  implicit val logAlg: LogAlg[MockEff] = new LogAlg[MockEff]
-  implicit val sbtAlg: SbtAlg[MockEff] = SbtAlg.create
+  implicit val vcsRepoAlg: VCSRepoAlg[MockEff] = VCSRepoAlg.create(config, gitAlg)
   implicit val scalafmtAlg: ScalafmtAlg[MockEff] = ScalafmtAlg.create
+  implicit val migrationAlg: MigrationAlg =
+    MigrationAlg.create[MockEff](config.scalafixMigrations).runA(MockState.empty).unsafeRunSync()
+  implicit val cacheRepository: RepoCacheRepository[MockEff] =
+    new RepoCacheRepository[MockEff](new JsonKeyValueStore("repo_cache", "1"))
+  implicit val filterAlg: FilterAlg[MockEff] = new FilterAlg[MockEff]
+  implicit val versionsCache: VersionsCache[MockEff] =
+    new VersionsCache[MockEff](config.cacheTtl, new JsonKeyValueStore("versions", "1"))
+  implicit val groupMigrations: GroupMigrations =
+    GroupMigrations.create[MockEff].runA(MockState.empty).unsafeRunSync()
+  implicit val updateAlg: UpdateAlg[MockEff] = new UpdateAlg[MockEff]
+  implicit val sbtAlg: SbtAlg[MockEff] = SbtAlg.create
   implicit val editAlg: EditAlg[MockEff] = new EditAlg[MockEff]
   implicit val repoConfigAlg: RepoConfigAlg[MockEff] = new RepoConfigAlg[MockEff]
-  implicit val filterAlg: FilterAlg[MockEff] = new FilterAlg[MockEff]
+  implicit val pullRequestRepository: PullRequestRepository[MockEff] =
+    new PullRequestRepository[MockEff](new JsonKeyValueStore("pull_requests", "1"))
+  implicit val pruningAlg: PruningAlg[MockEff] = new PruningAlg[MockEff]
 }

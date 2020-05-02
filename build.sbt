@@ -9,14 +9,15 @@ val rootPkg = groupId.replace("-", "")
 val gitHubOwner = "fthomas"
 
 val moduleCrossPlatformMatrix: Map[String, List[Platform]] = Map(
-  "core" -> List(JVMPlatform)
+  "core" -> List(JVMPlatform),
+  "plugin" -> List(JVMPlatform)
 )
 
 /// projects
 
 lazy val root = project
   .in(file("."))
-  .aggregate(core.jvm)
+  .aggregate(core.jvm, plugin.jvm)
   .settings(commonSettings)
   .settings(noPublishSettings)
 
@@ -26,28 +27,32 @@ lazy val core = myCrossProject("core")
   .settings(
     libraryDependencies ++= Seq(
       compilerPlugin(Dependencies.betterMonadicFor),
-      compilerPlugin(Dependencies.kindProjector),
+      compilerPlugin(Dependencies.kindProjector.cross(CrossVersion.full)),
       Dependencies.betterFiles,
       Dependencies.caseApp,
       Dependencies.catsEffect,
       Dependencies.circeConfig,
       Dependencies.circeGeneric,
+      Dependencies.circeGenericExtras,
       Dependencies.circeParser,
       Dependencies.circeRefined,
-      Dependencies.circeExtras,
       Dependencies.commonsIo,
       Dependencies.coursierCore,
       Dependencies.coursierCatsInterop,
+      Dependencies.cron4sCore,
       Dependencies.fs2Core,
-      Dependencies.http4sBlazeClient,
+      Dependencies.http4sAsyncHttpClient,
       Dependencies.http4sCirce,
       Dependencies.log4catsSlf4j,
       Dependencies.monocleCore,
       Dependencies.refined,
       Dependencies.refinedCats,
+      Dependencies.scalacacheCaffeine,
+      Dependencies.scalacacheCatsEffect,
       Dependencies.logbackClassic % Runtime,
       Dependencies.catsKernelLaws % Test,
       Dependencies.circeLiteral % Test,
+      Dependencies.disciplineScalatest % Test,
       Dependencies.http4sDsl % Test,
       Dependencies.refinedScalacheck % Test,
       Dependencies.scalacheck % Test,
@@ -60,29 +65,58 @@ lazy val core = myCrossProject("core")
       {
         case PathList(ps @ _*) if nativeSuffix.findFirstMatchIn(ps.last).isDefined =>
           MergeStrategy.first
+        case PathList(ps @ _*) if ps.last == "io.netty.versions.properties" =>
+          // This is included in Netty JARs which are pulled in by http4s-async-http-client.
+          MergeStrategy.first
+        case PathList("org", "fusesource", _*) =>
+          // (core / assembly) deduplicate: different file contents found in the following:
+          // https/repo1.maven.org/maven2/jline/jline/2.14.6/jline-2.14.6.jar:org/fusesource/hawtjni/runtime/Callback.class
+          // https/repo1.maven.org/maven2/org/fusesource/jansi/jansi/1.18/jansi-1.18.jar:org/fusesource/hawtjni/runtime/Callback.class
+          MergeStrategy.first
         case otherwise =>
           val defaultStrategy = (assemblyMergeStrategy in assembly).value
           defaultStrategy(otherwise)
       }
     },
-    buildInfoKeys := Seq[BuildInfoKey](scalaVersion, sbtVersion),
+    buildInfoKeys := Seq[BuildInfoKey](
+      version,
+      scalaVersion,
+      scalaBinaryVersion,
+      sbtVersion,
+      BuildInfoKey.map(git.gitHeadCommit) { case (k, v) => k -> v.getOrElse("master") }
+    ),
     buildInfoPackage := moduleRootPkg.value,
     initialCommands += s"""
       import ${moduleRootPkg.value}._
+      import ${moduleRootPkg.value}.data._
       import ${moduleRootPkg.value}.util.Nel
       import ${moduleRootPkg.value}.vcs.data._
       import better.files.File
       import cats.effect.ContextShift
       import cats.effect.IO
       import cats.effect.Timer
-      import org.http4s.client.blaze.BlazeClientBuilder
+      import _root_.io.chrisdavenport.log4cats.Logger
+      import _root_.io.chrisdavenport.log4cats.slf4j.Slf4jLogger
+      import org.http4s.client.Client
+      import org.http4s.client.asynchttpclient.AsyncHttpClient
       import scala.concurrent.ExecutionContext
 
       implicit val ioContextShift: ContextShift[IO] = IO.contextShift(ExecutionContext.global)
       implicit val ioTimer: Timer[IO] = IO.timer(ExecutionContext.global)
+      implicit val logger: Logger[IO] = Slf4jLogger.getLogger[IO]
+      implicit val client: Client[IO] = AsyncHttpClient.allocate[IO]().map(_._1).unsafeRunSync
     """,
     fork in run := true,
-    fork in Test := true
+    fork in Test := true,
+    Compile / unmanagedResourceDirectories ++= (plugin.jvm / Compile / unmanagedSourceDirectories).value
+  )
+
+lazy val plugin = myCrossProject("plugin")
+  .settings(noPublishSettings)
+  .settings(
+    scalaVersion := "2.12.10",
+    sbtPlugin := true,
+    Compile / compile / wartremoverErrors -= Wart.Equals
   )
 
 /// settings
@@ -116,9 +150,9 @@ lazy val commonSettings = Def.settings(
 )
 
 lazy val compileSettings = Def.settings(
-  doctestTestFramework := DoctestTestFramework.ScalaTest,
+  doctestTestFramework := DoctestTestFramework.ScalaCheck,
   wartremoverErrors ++= Seq(Wart.TraversableOps),
-  wartremoverErrors in (Compile, compile) ++= Seq(Wart.Equals)
+  Compile / compile / wartremoverErrors ++= Seq(Wart.Equals)
 )
 
 lazy val metadataSettings = Def.settings(
@@ -127,7 +161,10 @@ lazy val metadataSettings = Def.settings(
   homepage := Some(url(s"https://github.com/$gitHubOwner/$projectName")),
   startYear := Some(2018),
   licenses := List("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0")),
-  headerLicense := Some(HeaderLicense.ALv2("2018-2019", "Scala Steward contributors")),
+  scmInfo := Some(
+    ScmInfo(homepage.value.get, s"scm:git:https://github.com/$gitHubOwner/$projectName.git")
+  ),
+  headerLicense := Some(HeaderLicense.ALv2("2018-2020", "Scala Steward contributors")),
   developers := List(
     Developer(
       id = "fthomas",
@@ -139,47 +176,74 @@ lazy val metadataSettings = Def.settings(
 )
 
 lazy val dockerSettings = Def.settings(
-  dockerCommands := Seq(
-    Cmd("FROM", Option(System.getenv("DOCKER_BASE_IMAGE")).getOrElse("openjdk:8")),
-    Cmd("ARG", "DEBIAN_FRONTEND=noninteractive"),
-    ExecCmd("RUN", "apt-get", "update"),
-    ExecCmd("RUN", "apt-get", "install", "-y", "apt-transport-https", "firejail"),
-    ExecCmd(
-      "RUN",
-      "sh",
-      "-c",
-      """echo \"deb https://dl.bintray.com/sbt/debian /\" | tee -a /etc/apt/sources.list.d/sbt.list"""
-    ),
-    ExecCmd(
-      "RUN",
-      "apt-key",
-      "adv",
-      "--keyserver",
-      "hkp://keyserver.ubuntu.com:80",
-      "--recv",
-      "2EE0EA64E40A89B84B2DF73499E82A75642AC823"
-    ),
-    ExecCmd("RUN", "apt-get", "update"),
-    ExecCmd("RUN", "apt-get", "install", "-y", "sbt"),
-    Cmd("WORKDIR", "/opt/docker"),
-    Cmd("ADD", "opt", "/opt"),
-    ExecCmd("ENTRYPOINT", "/opt/docker/bin/scala-steward"),
-    ExecCmd("CMD", "")
-  ),
+  dockerBaseImage := Option(System.getenv("DOCKER_BASE_IMAGE")).getOrElse("openjdk:8-jre-alpine"),
+  dockerCommands ++= {
+    val getSbtVersion = sbtVersion.value
+    val sbtTgz = s"sbt-$getSbtVersion.tgz"
+    val sbtUrl = s"https://github.com/sbt/sbt/releases/download/v$getSbtVersion/$sbtTgz"
+    Seq(
+      Cmd("USER", "root"),
+      Cmd(
+        "RUN",
+        s"apk --no-cache add bash git ca-certificates && wget $sbtUrl && tar -xf $sbtTgz && rm -f $sbtTgz"
+      )
+    )
+  },
   Docker / packageName := s"${gitHubOwner}/${name.value}",
-  dockerUpdateLatest := true
+  dockerUpdateLatest := true,
+  dockerEntrypoint += "--disable-sandbox",
+  dockerEnvVars := Map("PATH" -> "/opt/docker/sbt/bin:${PATH}")
 )
 
 lazy val noPublishSettings = Def.settings(
   skip in publish := true
 )
 
-lazy val scaladocSettings = Def.settings()
+lazy val scaladocSettings = Def.settings(
+  Compile / doc / scalacOptions ++= {
+    val tag = s"v${version.value}"
+    val tree = if (isSnapshot.value) git.gitHeadCommit.value.getOrElse("master") else tag
+    Seq(
+      "-doc-source-url",
+      s"${scmInfo.value.get.browseUrl}/blob/${tree}€{FILE_PATH}.scala",
+      "-sourcepath",
+      (LocalRootProject / baseDirectory).value.getAbsolutePath
+    )
+  }
+)
 
 /// setting keys
 
+lazy val installPlugin = taskKey[Unit]("Copies StewardPlugin.scala into global plugins directory.")
+installPlugin := {
+  val name = "StewardPlugin.scala"
+  val source = (plugin.jvm / Compile / sources).value.find(_.name == name).get
+  val target = file(System.getProperty("user.home")) / ".sbt" / "1.0" / "plugins" / name
+  IO.copyFile(source, target)
+}
+
 lazy val moduleRootPkg = settingKey[String]("")
 moduleRootPkg := rootPkg
+
+// Run Scala Steward from sbt for development and testing.
+// Do not do this in production.
+lazy val runSteward = taskKey[Unit]("")
+runSteward := Def.taskDyn {
+  val home = System.getenv("HOME")
+  val projectDir = (LocalRootProject / baseDirectory).value
+  val args = Seq(
+    Seq("--workspace", s"$projectDir/workspace"),
+    Seq("--repos-file", s"$projectDir/repos.md"),
+    Seq("--git-author-email", s"me@$projectName.org"),
+    Seq("--vcs-login", projectName),
+    Seq("--git-ask-pass", s"$home/.github/askpass/$projectName.sh"),
+    Seq("--whitelist", s"$home/.cache/coursier"),
+    Seq("--whitelist", s"$home/.coursier"),
+    Seq("--whitelist", s"$home/.ivy2"),
+    Seq("--whitelist", s"$home/.sbt")
+  ).flatten.mkString(" ", " ", "")
+  (core.jvm / Compile / run).toTask(args)
+}.value
 
 /// commands
 
@@ -214,24 +278,4 @@ addCommandsAlias(
     "test:scalafmt",
     "scalafmtSbt"
   )
-)
-
-addCommandAlias(
-  "runSteward", {
-    val home = System.getenv("HOME")
-    val projectDir = s"$home/code/scala-steward/core"
-    Seq(
-      Seq("core/run"),
-      Seq("--workspace", s"$projectDir/workspace"),
-      Seq("--repos-file", s"$projectDir/repos.md"),
-      Seq("--git-author-email", s"me@$projectName.org"),
-      Seq("--vcs-login", projectName),
-      Seq("--git-ask-pass", s"$home/.github/askpass/$projectName.sh"),
-      Seq("--whitelist", s"$home/.cache/coursier"),
-      Seq("--whitelist", s"$home/.coursier"),
-      Seq("--whitelist", s"$home/.ivy2"),
-      Seq("--whitelist", s"$home/.sbt"),
-      Seq("--prune-repos=false")
-    ).flatten.mkString(" ")
-  }
 )

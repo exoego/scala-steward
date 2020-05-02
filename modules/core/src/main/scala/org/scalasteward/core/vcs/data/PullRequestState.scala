@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,9 +30,11 @@ object PullRequestState {
 
   implicit val pullRequestStateDecoder: Decoder[PullRequestState] =
     Decoder[String].emap {
-      case "open" | "opened"   => Right(Open)
-      case "closed" | "merged" => Right(Closed)
-      case unknown             => Left(s"Unexpected string '$unknown'")
+      _.toLowerCase match {
+        case "open" | "opened"                => Right(Open)
+        case "closed" | "merged" | "declined" => Right(Closed)
+        case unknown                          => Left(s"Unexpected string '$unknown'")
+      }
     }
 
   implicit val pullRequestStateEncoder: Encoder[PullRequestState] =

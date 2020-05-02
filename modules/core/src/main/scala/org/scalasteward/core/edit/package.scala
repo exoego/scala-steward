@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,8 +42,8 @@ package object edit {
       Nel.of((target, true))
     } else {
       val buffer = mutable.ListBuffer.empty[(String, Boolean)]
-      val on = StringBuilder.newBuilder
-      val off = StringBuilder.newBuilder
+      val on = new StringBuilder()
+      val off = new StringBuilder()
       val regexIgnoreMultiLinesBegins = "^\\s*//\\s*scala-steward:off".r
       def flush(builder: StringBuilder, canReplace: Boolean): Unit =
         if (builder.nonEmpty) {

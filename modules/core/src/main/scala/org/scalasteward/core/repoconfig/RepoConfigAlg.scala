@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ final class RepoConfigAlg[F[_]](
     workspaceAlg.repoDir(repo).flatMap { dir =>
       val configFile = dir / repoConfigBasename
       val maybeRepoConfig = OptionT(fileAlg.readFile(configFile)).map(parseRepoConfig).flatMapF {
-        case Right(config)  => logger.info(s"Parsed $config") >> F.pure(config.some)
+        case Right(config)  => logger.info(s"Parsed $config").as(config.some)
         case Left(errorMsg) => logger.info(errorMsg).as(none[RepoConfig])
       }
       maybeRepoConfig.value
@@ -58,7 +58,7 @@ object RepoConfigAlg {
   def configToIgnoreFurtherUpdates(update: Update): String =
     update match {
       case s: Update.Single =>
-        s"""updates.ignore = [ { groupId = "${s.groupId}", artifactId = "${s.artifactId}" } ]"""
+        s"""updates.ignore = [ { groupId = "${s.groupId}", artifactId = "${s.artifactId.name}" } ]"""
       case g: Update.Group =>
         s"""updates.ignore = [ { groupId = "${g.groupId}" } ]"""
     }

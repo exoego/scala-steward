@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,9 @@
 
 package org.scalasteward.core.edit
 
+import cats.Foldable
 import cats.implicits._
-import org.scalasteward.core.data.Update
+import org.scalasteward.core.data.{GroupId, Update}
 import org.scalasteward.core.util
 import org.scalasteward.core.util.Nel
 import scala.util.matching.Regex
@@ -33,11 +34,31 @@ final case class UpdateHeuristic(
 )
 
 object UpdateHeuristic {
+  private def alternation[F[_]: Foldable](strings: F[String]): String =
+    strings.mkString_("(", "|", ")")
+
+  private def shouldBeIgnored(prefix: String): Boolean =
+    prefix.toLowerCase.contains("previous") || prefix.trim.startsWith("//")
+
+  private def replaceGroupF(update: Update): String => Option[String] = { target =>
+    update match {
+      case s @ Update.Single(_, _, Some(newerGroupId)) =>
+        val currentGroupId = Regex.quote(s.groupId.value)
+        val currentArtifactId = Regex.quote(s.artifactId.name)
+        val regex = s"""(?i)(.*)${currentGroupId}(.*${currentArtifactId})""".r
+        replaceSomeInAllowedParts(regex, target, match0 => {
+          val group1 = match0.group(1)
+          val group2 = match0.group(2)
+          Some(s"""$group1$newerGroupId$group2""")
+        }).someIfChanged
+      case _ => Some(target)
+    }
+  }
+
   private def defaultReplaceVersion(
       getSearchTerms: Update => List[String],
       getPrefixRegex: Update => Option[String] = _ => None
   ): Update => String => Option[String] = {
-
     def searchTermsToAlternation(terms: List[String]): Option[String] = {
       val ignoreChar = ".?"
       val ignorableStrings = List(".", "-")
@@ -49,18 +70,20 @@ object UpdateHeuristic {
           }
         }
 
-      if (terms1.nonEmpty) Some(terms1.mkString("(", "|", ")")) else None
+      if (terms1.nonEmpty) Some(alternation(terms1)) else None
     }
 
     def mkRegex(update: Update): Option[Regex] =
-      searchTermsToAlternation(getSearchTerms(update).map(Update.removeCommonSuffix)).map {
-        searchTerms =>
-          val prefix = getPrefixRegex(update).getOrElse("")
-          val currentVersion = Regex.quote(update.currentVersion)
-          s"(?i)(.*)($prefix$searchTerms.*?)$currentVersion(.?)".r
+      searchTermsToAlternation(getSearchTerms(update).map(removeCommonSuffix)).map { searchTerms =>
+        val prefix = getPrefixRegex(update).getOrElse("")
+        val currentVersion = Regex.quote(update.currentVersion)
+        s"(?i)(.*)($prefix$searchTerms.*?)$currentVersion(.?)".r
       }
 
     def replaceF(update: Update): String => Option[String] =
+      target => replaceVersionF(update)(target) >>= replaceGroupF(update)
+
+    def replaceVersionF(update: Update): String => Option[String] =
       mkRegex(update).fold((_: String) => Option.empty[String]) { regex => target =>
         replaceSomeInAllowedParts(
           regex,
@@ -71,9 +94,7 @@ object UpdateHeuristic {
             val lastGroup = match0.group(match0.groupCount)
             val versionInQuotes =
               group2.lastOption.filter(_ === '"').fold(true)(lastGroup.headOption.contains_)
-            if (group1.toLowerCase.contains("previous")
-                || group1.trim.startsWith("//")
-                || !versionInQuotes) None
+            if (shouldBeIgnored(group1) || !versionInQuotes) None
             else Some(Regex.quoteReplacement(group1 + group2 + update.nextVersion + lastGroup))
           }
         ).someIfChanged
@@ -82,35 +103,100 @@ object UpdateHeuristic {
     replaceF
   }
 
+  private def searchTerms(update: Update): List[String] = {
+    val terms = update match {
+      case s: Update.Single => Nel.one(s.artifactId.name)
+      case g: Update.Group =>
+        g.artifactIds.map(_.name).concat(g.artifactIdsPrefix.map(_.value).toList)
+    }
+    terms.map(Update.nameOf(update.groupId, _)).toList
+  }
+
+  private def removeCommonSuffix(str: String): String =
+    util.string.removeSuffix(str, Update.commonSuffixes)
+
+  val moduleId = UpdateHeuristic(
+    name = "moduleId",
+    replaceVersion = update =>
+      target =>
+        {
+          val groupId = Regex.quote(update.groupId.value)
+          val artifactIds =
+            alternation(update.artifactIds.map(artifactId => Regex.quote(artifactId.name)))
+          val currentVersion = Regex.quote(update.currentVersion)
+          val regex =
+            raw"""(.*)(["|`]$groupId(?:"\s*%+\s*"|:+)$artifactIds(?:"\s*%\s*|:+))("?)($currentVersion)("|`)""".r
+          replaceSomeInAllowedParts(
+            regex,
+            target,
+            match0 => {
+              val precedingCharacters = match0.group(1)
+              val dependency = match0.group(2)
+              val versionPrefix = match0.group(4)
+              val versionSuffix = match0.group(6)
+              if (shouldBeIgnored(precedingCharacters)) None
+              else
+                Some(
+                  Regex.quoteReplacement(
+                    s"""$precedingCharacters$dependency$versionPrefix${update.nextVersion}$versionSuffix"""
+                  )
+                )
+            }
+          ).someIfChanged
+        } >>= replaceGroupF(update)
+  )
+
   val strict = UpdateHeuristic(
     name = "strict",
-    replaceVersion =
-      defaultReplaceVersion(_.searchTerms.toList, update => Some(s"${update.groupId}.*?"))
+    replaceVersion = defaultReplaceVersion(searchTerms, update => Some(s"${update.groupId}.*?"))
   )
 
   val original = UpdateHeuristic(
     name = "original",
-    replaceVersion = defaultReplaceVersion(_.searchTerms.toList)
+    replaceVersion = defaultReplaceVersion(searchTerms)
   )
 
   val relaxed = UpdateHeuristic(
     name = "relaxed",
-    replaceVersion = defaultReplaceVersion(update => util.string.extractWords(update.artifactId))
+    replaceVersion = defaultReplaceVersion { update =>
+      util.string.extractWords(update.mainArtifactId)
+    }
   )
 
   val sliding = UpdateHeuristic(
     name = "sliding",
-    replaceVersion =
-      defaultReplaceVersion(_.artifactId.sliding(5).take(5).filterNot(_ === "scala").toList)
+    replaceVersion = defaultReplaceVersion(
+      _.mainArtifactId.toSeq.sliding(5).map(_.unwrap).take(5).filterNot(_ === "scala").toList
+    )
+  )
+
+  val completeGroupId = UpdateHeuristic(
+    name = "completeGroupId",
+    replaceVersion = defaultReplaceVersion(update => List(update.groupId.value))
   )
 
   val groupId = UpdateHeuristic(
     name = "groupId",
     replaceVersion = defaultReplaceVersion(
-      _.groupId.split('.').toList.drop(1).flatMap(util.string.extractWords).filter(_.length > 3)
+      _.groupId.value
+        .split('.')
+        .toList
+        .drop(1)
+        .flatMap(util.string.extractWords)
+        .filter(_.length > 3)
     )
   )
 
+  val specific = UpdateHeuristic(
+    name = "specific",
+    replaceVersion = defaultReplaceVersion {
+      case s: Update.Single
+          if s.groupId === GroupId("org.scalameta") && s.artifactId.name === "scalafmt-core" =>
+        List("version")
+      case _ => List.empty
+    }
+  )
+
   val all: Nel[UpdateHeuristic] =
-    Nel.of(strict, original, relaxed, sliding, groupId)
+    Nel.of(moduleId, strict, original, relaxed, sliding, completeGroupId, groupId, specific)
 }

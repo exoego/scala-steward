@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,22 @@
 
 package org.scalasteward.core.nurture
 
-import cats.effect.Async
+import cats.effect.Sync
 import cats.implicits._
+import eu.timepit.refined.types.numeric.PosInt
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.application.Config
 import org.scalasteward.core.coursier.CoursierAlg
-import org.scalasteward.core.data.{Dependency, Update}
+import org.scalasteward.core.data.ProcessResult.{Ignored, Updated}
+import org.scalasteward.core.data.{ProcessResult, Scope, Update}
 import org.scalasteward.core.edit.EditAlg
 import org.scalasteward.core.git.{Branch, GitAlg}
-import org.scalasteward.core.repoconfig.RepoConfigAlg
-import org.scalasteward.core.sbt.SbtAlg
+import org.scalasteward.core.repocache.RepoCacheRepository
+import org.scalasteward.core.repoconfig.{PullRequestUpdateStrategy, RepoConfigAlg}
 import org.scalasteward.core.scaladex.ScaladexAlg
-import org.scalasteward.core.scalafmt.ScalafmtAlg
-import org.scalasteward.core.update.FilterAlg
-import org.scalasteward.core.util.LogAlg
+import org.scalasteward.core.scalafix.MigrationAlg
+import org.scalasteward.core.util.{DateTimeAlg, HttpExistenceClient}
+import org.scalasteward.core.util.logger.LoggerOps
 import org.scalasteward.core.vcs.data.{NewPullRequestData, Repo}
 import org.scalasteward.core.vcs.{VCSApiAlg, VCSExtraAlg, VCSRepoAlg}
 import org.scalasteward.core.{git, util, vcs}
@@ -37,116 +39,114 @@ import org.scalasteward.core.{git, util, vcs}
 final class NurtureAlg[F[_]](
     implicit
     config: Config,
+    dateTimeAlg: DateTimeAlg[F],
     editAlg: EditAlg[F],
     repoConfigAlg: RepoConfigAlg[F],
-    filterAlg: FilterAlg[F],
     gitAlg: GitAlg[F],
     coursierAlg: CoursierAlg[F],
     scaladexAlg: ScaladexAlg[F],
     vcsApiAlg: VCSApiAlg[F],
     vcsRepoAlg: VCSRepoAlg[F],
     vcsExtraAlg: VCSExtraAlg[F],
-    logAlg: LogAlg[F],
+    existenceClient: HttpExistenceClient[F],
     logger: Logger[F],
-    pullRequestRepo: PullRequestRepository[F],
-    sbtAlg: SbtAlg[F],
-    scalafmtAlg: ScalafmtAlg[F],
-    F: Async[F]
+    migrationAlg: MigrationAlg,
+    pullRequestRepository: PullRequestRepository[F],
+    repoCacheRepository: RepoCacheRepository[F],
+    F: Sync[F]
 ) {
-  def nurture(repo: Repo): F[Either[Throwable, Unit]] =
-    logAlg.infoTotalTime(repo.show) {
-      logAlg.attemptLog(util.string.lineLeftRight(s"Nurture ${repo.show}")) {
-        for {
-          (fork, baseBranch) <- cloneAndSync(repo)
-          _ <- updateDependencies(repo, fork, baseBranch)
-          _ <- gitAlg.removeClone(repo)
-        } yield ()
+  def nurture(repo: Repo, updates: List[Update.Single]): F[Either[Throwable, Unit]] = {
+    val label = s"Nurture ${repo.show}"
+    logger.infoTotalTime(label) {
+      logger.attemptLog(util.string.lineLeftRight(label)) {
+        F.bracket(cloneAndSync(repo)) {
+          case (fork, baseBranch) => updateDependencies(repo, fork, baseBranch, updates)
+        }(_ => gitAlg.removeClone(repo))
       }
     }
+  }
 
   def cloneAndSync(repo: Repo): F[(Repo, Branch)] =
     for {
       _ <- logger.info(s"Clone and synchronize ${repo.show}")
       repoOut <- vcsApiAlg.createForkOrGetRepo(config, repo)
-      _ <- vcsRepoAlg.clone(repo, repoOut)
-      parent <- vcsRepoAlg.syncFork(repo, repoOut)
-    } yield (repoOut.repo, parent.default_branch)
+      _ <- gitAlg
+        .cloneExists(repo)
+        .ifM(F.unit, vcsRepoAlg.clone(repo, repoOut) >> vcsRepoAlg.syncFork(repo, repoOut))
+      defaultBranch <- vcsRepoAlg.defaultBranch(repoOut)
+    } yield (repoOut.repo, defaultBranch)
 
-  def updateDependencies(repo: Repo, fork: Repo, baseBranch: Branch): F[Unit] =
+  def updateDependencies(
+      repo: Repo,
+      fork: Repo,
+      baseBranch: Branch,
+      updates: List[Update.Single]
+  ): F[Unit] =
     for {
-      _ <- logger.info(s"Find updates for ${repo.show}")
       repoConfig <- repoConfigAlg.readRepoConfigOrDefault(repo)
-      sbtUpdates <- sbtAlg.getUpdatesForRepo(repo)
-      nonSbtUpdates <- getNonSbtUpdates(repo)
-      updates = sbtUpdates ::: nonSbtUpdates
-      filtered <- filterAlg.localFilterMany(repoConfig, updates)
-      grouped = Update.group(filtered)
-      _ <- logger.info(util.logger.showUpdates(grouped))
+      grouped = Update.groupByGroupId(updates)
+      sorted = grouped.sortBy(migrationAlg.findMigrations(_).size)
+      _ <- logger.info(util.logger.showUpdates(sorted))
       baseSha1 <- gitAlg.latestSha1(repo, baseBranch)
-      memoizedGetDependencies <- Async.memoize(sbtAlg.getDependencies(repo))
-      _ <- grouped.traverse_ { update =>
-        val data =
-          UpdateData(
-            repo,
-            fork,
-            repoConfig,
-            update,
-            baseBranch,
-            baseSha1,
-            git.branchFor(update)
-          )
-        processUpdate(data, memoizedGetDependencies)
-      }
+      _ <- NurtureAlg.processUpdates(
+        sorted,
+        update =>
+          processUpdate(
+            UpdateData(repo, fork, repoConfig, update, baseBranch, baseSha1, git.branchFor(update))
+          ),
+        repoConfig.updates.limit
+      )
     } yield ()
 
-  def getNonSbtUpdates(repo: Repo): F[List[Update.Single]] =
-    for {
-      maybeScalafmt <- scalafmtAlg.getScalafmtUpdate(repo)
-    } yield List(maybeScalafmt).flatten
-
-  def processUpdate(data: UpdateData, getDependencies: F[List[Dependency]]): F[Unit] =
+  def processUpdate(data: UpdateData): F[ProcessResult] =
     for {
       _ <- logger.info(s"Process update ${data.update.show}")
       head = vcs.listingBranch(config.vcsType, data.fork, data.update)
       pullRequests <- vcsApiAlg.listPullRequests(data.repo, head, data.baseBranch)
-      _ <- pullRequests.headOption match {
+      result <- pullRequests.headOption match {
         case Some(pr) if pr.isClosed =>
-          logger.info(s"PR ${pr.html_url} is closed")
-        case Some(pr) if data.repoConfig.updatePullRequests =>
-          logger.info(s"Found PR ${pr.html_url}") >> updatePullRequest(data)
+          logger.info(s"PR ${pr.html_url} is closed") >> F.pure[ProcessResult](Ignored)
         case Some(pr) =>
-          logger.info(s"Found PR ${pr.html_url}, but updates are disabled by flag")
+          logger.info(s"Found PR ${pr.html_url}") >> updatePullRequest(data)
         case None =>
-          applyNewUpdate(data, getDependencies)
+          applyNewUpdate(data)
       }
-      _ <- pullRequests.headOption.fold(F.unit) { pr =>
-        pullRequestRepo.createOrUpdate(data.repo, pr.html_url, data.baseSha1, data.update, pr.state)
+      _ <- pullRequests.headOption.traverse_ { pr =>
+        pullRequestRepository.createOrUpdate(
+          data.repo,
+          pr.html_url,
+          data.baseSha1,
+          data.update,
+          pr.state
+        )
       }
-    } yield ()
+    } yield result
 
-  def applyNewUpdate(data: UpdateData, getDependencies: F[List[Dependency]]): F[Unit] =
-    (editAlg.applyUpdate(data.repo, data.update) >> gitAlg.containsChanges(data.repo)).ifM(
+  def applyNewUpdate(data: UpdateData): F[ProcessResult] =
+    (editAlg.applyUpdate(data.repo, data.update, data.repoConfig.updates.fileExtensionsOrDefault) >> gitAlg
+      .containsChanges(data.repo)).ifM(
       gitAlg.returnToCurrentBranch(data.repo) {
         for {
           _ <- logger.info(s"Create branch ${data.updateBranch.name}")
           _ <- gitAlg.createBranch(data.repo, data.updateBranch)
           _ <- commitAndPush(data)
-          _ <- createPullRequest(data, getDependencies)
-        } yield ()
+          _ <- createPullRequest(data)
+        } yield Updated
       },
-      logger.warn("No files were changed")
+      logger.warn("No files were changed") >> F.pure[ProcessResult](Ignored)
     )
 
-  def commitAndPush(data: UpdateData): F[Unit] =
+  def commitAndPush(data: UpdateData): F[ProcessResult] =
     for {
       _ <- logger.info("Commit and push changes")
-      _ <- gitAlg.commitAll(data.repo, git.commitMsgFor(data.update))
+      commitMsgConfig = data.repoConfig.commits
+      _ <- gitAlg.commitAll(data.repo, git.commitMsgFor(data.update, commitMsgConfig))
       _ <- gitAlg.push(data.repo, data.updateBranch)
-    } yield ()
+    } yield Updated
 
-  def getArtifactIdUrlMapping(dependencies: List[Dependency]): F[Map[String, String]] =
+  def getArtifactIdUrlMapping(scope: Scope): F[Map[String, String]] =
     for {
-      coursierResult <- coursierAlg.getArtifactIdUrlMapping(dependencies)
+      coursierResult <- coursierAlg.getArtifactIdUrlMapping(scope)
       notFoundInCoursier = dependencies.filter { dep =>
         !coursierResult.get(dep.artifactId).exists(vcs.isVcsUrl)
       }
@@ -155,26 +155,30 @@ final class NurtureAlg[F[_]](
       merged = util.combineMapLastWin(coursierResult, scaladexResult)
     } yield merged
 
-  def createPullRequest(data: UpdateData, getDependencies: F[List[Dependency]]): F[Unit] =
+  def createPullRequest(data: UpdateData): F[Unit] =
     for {
       _ <- logger.info(s"Create PR ${data.updateBranch.name}")
-      dependencies <- getDependencies
-      filteredDependencies = dependenciesInUpdates(dependencies, data.update)
-      artifactIdToUrl <- getArtifactIdUrlMapping(filteredDependencies)
-      branchCompareUrl <- vcsExtraAlg.getBranchCompareUrl(
-        artifactIdToUrl.get(data.update.artifactId),
-        data.update
+      maybeRepoCache <- repoCacheRepository.findCache(data.repo)
+      resolvers = maybeRepoCache.map(_.dependencyInfos.flatMap(_.resolvers)).getOrElse(List.empty)
+      artifactIdToUrl <- getArtifactIdUrlMapping(
+        Scope(data.update.dependencies.toList, resolvers)
       )
+      existingArtifactUrlsList <- artifactIdToUrl.toList.filterA(a => existenceClient.exists(a._2))
+      existingArtifactUrlsMap = existingArtifactUrlsList.toMap
+      releaseRelatedUrls <- existingArtifactUrlsMap
+        .get(data.update.mainArtifactId)
+        .traverse(vcsExtraAlg.getReleaseRelatedUrls(_, data.update))
       branchName = vcs.createBranch(config.vcsType, data.fork, data.update)
+      migrations = migrationAlg.findMigrations(data.update)
       requestData = NewPullRequestData.from(
         data,
         branchName,
-        config.vcsLogin,
-        artifactIdToUrl,
-        branchCompareUrl
+        existingArtifactUrlsMap,
+        releaseRelatedUrls.getOrElse(List.empty),
+        migrations
       )
       pr <- vcsApiAlg.createPullRequest(data.repo, requestData)
-      _ <- pullRequestRepo.createOrUpdate(
+      _ <- pullRequestRepository.createOrUpdate(
         data.repo,
         pr.html_url,
         data.baseSha1,
@@ -184,27 +188,17 @@ final class NurtureAlg[F[_]](
       _ <- logger.info(s"Created PR ${pr.html_url}")
     } yield ()
 
-  private def dependenciesInUpdates(
-      dependencies: List[Dependency],
-      update: Update
-  ): List[Dependency] =
-    update match {
-      case Update.Single(groupId, artifactId, _, _, _) =>
-        dependencies.filter(dep => dep.groupId === groupId && dep.artifactId === artifactId)
-      case Update.Group(groupId, artifactIds, _, _) =>
-        val artifactIdSet = artifactIds.toList.toSet
-        dependencies.filter(
-          dep => dep.groupId === groupId && artifactIdSet.contains(dep.artifactId)
-        )
-    }
-
-  def updatePullRequest(data: UpdateData): F[Unit] =
-    gitAlg.returnToCurrentBranch(data.repo) {
-      for {
-        _ <- gitAlg.checkoutBranch(data.repo, data.updateBranch)
-        updated <- shouldBeUpdated(data)
-        _ <- if (updated) mergeAndApplyAgain(data) else F.unit
-      } yield ()
+  def updatePullRequest(data: UpdateData): F[ProcessResult] =
+    if (data.repoConfig.updatePullRequestsOrDefault =!= PullRequestUpdateStrategy.Never) {
+      gitAlg.returnToCurrentBranch(data.repo) {
+        for {
+          _ <- gitAlg.checkoutBranch(data.repo, data.updateBranch)
+          update <- shouldBeUpdated(data)
+          result <- if (update) mergeAndApplyAgain(data) else F.pure[ProcessResult](Ignored)
+        } yield result
+      }
+    } else {
+      logger.info("PR updates are disabled by flag").as(Ignored)
     }
 
   def shouldBeUpdated(data: UpdateData): F[Boolean] = {
@@ -215,24 +209,53 @@ final class NurtureAlg[F[_]](
           val distinctAuthors = authors.distinct
           if (distinctAuthors.length >= 2)
             (false, s"PR has commits by ${distinctAuthors.mkString(", ")}").pure[F]
-          else
-            gitAlg.hasConflicts(data.repo, data.updateBranch, data.baseBranch).map {
-              case true  => (true, s"PR has conflicts with ${data.baseBranch.name}")
-              case false => (false, s"PR has no conflict with ${data.baseBranch.name}")
-            }
+          else {
+            if (data.repoConfig.updatePullRequestsOrDefault === PullRequestUpdateStrategy.Always)
+              (true, "PR update strategy is set to always").pure[F]
+            else
+              gitAlg.hasConflicts(data.repo, data.updateBranch, data.baseBranch).map {
+                case true  => (true, s"PR has conflicts with ${data.baseBranch.name}")
+                case false => (false, s"PR has no conflict with ${data.baseBranch.name}")
+              }
+          }
         }
     }
-    result.flatMap { case (reset, msg) => logger.info(msg).as(reset) }
+    result.flatMap { case (update, msg) => logger.info(msg).as(update) }
   }
 
-  def mergeAndApplyAgain(data: UpdateData): F[Unit] =
+  def mergeAndApplyAgain(data: UpdateData): F[ProcessResult] =
     for {
       _ <- logger.info(
         s"Merge branch '${data.baseBranch.name}' into ${data.updateBranch.name} and apply again"
       )
       _ <- gitAlg.mergeTheirs(data.repo, data.baseBranch)
-      _ <- editAlg.applyUpdate(data.repo, data.update)
+      _ <- editAlg.applyUpdate(
+        data.repo,
+        data.update,
+        data.repoConfig.updates.fileExtensionsOrDefault
+      )
       containsChanges <- gitAlg.containsChanges(data.repo)
-      _ <- if (containsChanges) commitAndPush(data) else F.unit
-    } yield ()
+      result <- if (containsChanges) commitAndPush(data) else F.pure[ProcessResult](Ignored)
+    } yield result
+}
+
+object NurtureAlg {
+  def processUpdates[F[_]: Sync](
+      updates: List[Update],
+      updateF: Update => F[ProcessResult],
+      updatesLimit: Option[PosInt]
+  ): F[Unit] =
+    updatesLimit match {
+      case None => updates.traverse_(updateF)
+      case Some(limit) =>
+        fs2.Stream
+          .emits(updates)
+          .evalMap(updateF)
+          .through(util.takeUntil(limit.value) {
+            case Ignored => 0
+            case Updated => 1
+          })
+          .compile
+          .drain
+    }
 }

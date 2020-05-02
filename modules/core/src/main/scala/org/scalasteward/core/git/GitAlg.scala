@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,8 @@ trait GitAlg[F[_]] {
 
   def clone(repo: Repo, url: Uri): F[Unit]
 
+  def cloneExists(repo: Repo): F[Boolean]
+
   def commitAll(repo: Repo, message: String): F[Unit]
 
   def containsChanges(repo: Repo): F[Boolean]
@@ -39,6 +41,8 @@ trait GitAlg[F[_]] {
   def createBranch(repo: Repo, branch: Branch): F[Unit]
 
   def currentBranch(repo: Repo): F[Branch]
+
+  def findFilesContaining(repo: Repo, string: String): F[List[String]]
 
   /** Returns `true` if merging `branch` into `base` results in merge conflicts. */
   def hasConflicts(repo: Repo, branch: Branch, base: Branch): F[Boolean]
@@ -51,8 +55,6 @@ trait GitAlg[F[_]] {
   def mergeTheirs(repo: Repo, branch: Branch): F[Unit]
 
   def push(repo: Repo, branch: Branch): F[Unit]
-
-  def remoteBranchExists(repo: Repo, branch: Branch): F[Boolean]
 
   def removeClone(repo: Repo): F[Unit]
 
@@ -94,6 +96,12 @@ object GitAlg {
           _ <- exec(Nel.of("clone", "--recursive", url.toString, repoDir.pathAsString), rootDir)
         } yield ()
 
+      override def cloneExists(repo: Repo): F[Boolean] =
+        for {
+          repoDir <- workspaceAlg.repoDir(repo)
+          dotGitExists <- fileAlg.isDirectory(repoDir / ".git")
+        } yield dotGitExists
+
       override def commitAll(repo: Repo, message: String): F[Unit] =
         for {
           repoDir <- workspaceAlg.repoDir(repo)
@@ -120,6 +128,13 @@ object GitAlg {
           repoDir <- workspaceAlg.repoDir(repo)
           lines <- exec(Nel.of("rev-parse", "--abbrev-ref", "HEAD"), repoDir)
         } yield Branch(lines.mkString.trim)
+
+      override def findFilesContaining(repo: Repo, string: String): F[List[String]] =
+        for {
+          repoDir <- workspaceAlg.repoDir(repo)
+          args = Nel.of("grep", "-I", "--fixed-strings", "--files-with-matches", string)
+          lines <- exec(args, repoDir).handleError(_ => List.empty[String])
+        } yield lines.filter(_.nonEmpty)
 
       override def hasConflicts(repo: Repo, branch: Branch, base: Branch): F[Boolean] =
         workspaceAlg.repoDir(repo).flatMap { repoDir =>
@@ -156,12 +171,6 @@ object GitAlg {
           _ <- exec(Nel.of("push", "--force", "--set-upstream", "origin", branch.name), repoDir)
         } yield ()
 
-      override def remoteBranchExists(repo: Repo, branch: Branch): F[Boolean] =
-        for {
-          repoDir <- workspaceAlg.repoDir(repo)
-          branches <- exec(Nel.of("branch", "-r"), repoDir)
-        } yield branches.exists(_.endsWith(branch.name))
-
       override def removeClone(repo: Repo): F[Unit] =
         workspaceAlg.repoDir(repo).flatMap(fileAlg.deleteForce)
 
@@ -179,7 +188,7 @@ object GitAlg {
           branch = defaultBranch.name
           remoteBranch = s"$remote/$branch"
           _ <- exec(Nel.of("remote", "add", remote, upstreamUrl.toString), repoDir)
-          _ <- exec(Nel.of("fetch", remote), repoDir)
+          _ <- exec(Nel.of("fetch", "--tags", remote, branch), repoDir)
           _ <- exec(Nel.of("checkout", "-B", branch, "--track", remoteBranch), repoDir)
           _ <- exec(Nel.of("merge", remoteBranch), repoDir)
           _ <- push(repo, defaultBranch)

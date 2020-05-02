@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,10 +29,10 @@ import org.scalasteward.core.vcs.data._
 class Http4sBitbucketApiAlg[F[_]: Sync](
     bitbucketApiHost: Uri,
     user: AuthenticatedUser,
-    modify: Repo => Request[F] => F[Request[F]]
+    modify: Repo => Request[F] => F[Request[F]],
+    doNotFork: Boolean
 )(implicit client: HttpJsonClient[F])
     extends VCSApiAlg[F] {
-
   private val url = new Url(bitbucketApiHost)
 
   override def createFork(repo: Repo): F[RepoOut] =
@@ -59,11 +59,12 @@ class Http4sBitbucketApiAlg[F[_]: Sync](
     )
 
   override def createPullRequest(repo: Repo, data: NewPullRequestData): F[PullRequestOut] = {
+    val sourceBranchOwner = if (doNotFork) repo.owner else user.login
 
     val payload = CreatePullRequestRequest(
       data.title,
       Branch(data.head),
-      Repo(user.login, repo.repo),
+      Repo(sourceBranchOwner, repo.repo),
       data.base,
       data.body
     )
@@ -85,5 +86,4 @@ class Http4sBitbucketApiAlg[F[_]: Sync](
     client
       .get[Page[PullRequestOut]](url.listPullRequests(repo, head), modify(repo))
       .map(_.values)
-
 }

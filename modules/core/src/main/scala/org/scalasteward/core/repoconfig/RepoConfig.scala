@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,24 +16,26 @@
 
 package org.scalasteward.core.repoconfig
 
+import io.circe.Codec
 import io.circe.generic.extras.Configuration
 import io.circe.generic.extras.semiauto._
-import io.circe.{Decoder, Encoder}
 
 final case class RepoConfig(
+    commits: CommitsConfig = CommitsConfig(),
+    pullRequests: PullRequestsConfig = PullRequestsConfig(),
     updates: UpdatesConfig = UpdatesConfig(),
-    updatePullRequests: Boolean = true
-)
+    updatePullRequests: Option[PullRequestUpdateStrategy] = None
+) {
+  def updatePullRequestsOrDefault: PullRequestUpdateStrategy =
+    updatePullRequests.getOrElse(PullRequestUpdateStrategy.default)
+}
 
 object RepoConfig {
-  val default = RepoConfig()
+  val default: RepoConfig = RepoConfig()
 
   implicit val customConfig: Configuration =
     Configuration.default.withDefaults
 
-  implicit val repoConfigDecoder: Decoder[RepoConfig] =
-    deriveDecoder
-
-  implicit val repoConfigEncoder: Encoder[RepoConfig] =
-    deriveEncoder
+  implicit val repoConfigCodec: Codec[RepoConfig] =
+    deriveConfiguredCodec
 }

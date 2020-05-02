@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,13 @@ package org.scalasteward.core.edit
 
 import better.files.File
 import cats.Traverse
-import cats.effect.Sync
 import cats.implicits._
+import fs2.Stream
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.data.Update
-import org.scalasteward.core.io.{isFileSpecificTo, isSourceFile, FileAlg, WorkspaceAlg}
+import org.scalasteward.core.io.{isSourceFile, FileAlg, WorkspaceAlg}
 import org.scalasteward.core.sbt.SbtAlg
-import org.scalasteward.core.{scalafix, scalafmt}
-import org.scalasteward.core.scalafmt.ScalafmtAlg
+import org.scalasteward.core.scalafix.MigrationAlg
 import org.scalasteward.core.util._
 import org.scalasteward.core.vcs.data.Repo
 
@@ -33,26 +32,26 @@ final class EditAlg[F[_]](
     implicit
     fileAlg: FileAlg[F],
     logger: Logger[F],
+    migrationAlg: MigrationAlg,
     sbtAlg: SbtAlg[F],
-    scalafmtAlg: ScalafmtAlg[F],
+    streamCompiler: Stream.Compiler[F, F],
     workspaceAlg: WorkspaceAlg[F],
-    F: Sync[F]
+    F: MonadThrowable[F]
 ) {
-  def applyUpdate(repo: Repo, update: Update): F[Unit] =
-    if (scalafmt.isScalafmtUpdate(update))
-      scalafmtAlg.editScalafmtConf(repo, update.nextVersion)
-    else
-      for {
-        _ <- applyScalafixMigrations(repo, update)
-        repoDir <- workspaceAlg.repoDir(repo)
-        files <- fileAlg.findSourceFilesContaining(
-          repoDir,
-          update.currentVersion,
-          f => isSourceFile(f) && isFileSpecificTo(update)(f)
-        )
-        noFilesFound = logger.warn("No files found that contain the current version")
-        _ <- files.toNel.fold(noFilesFound)(applyUpdateTo(_, update))
-      } yield ()
+  def applyUpdate(repo: Repo, update: Update, fileExtensions: Set[String]): F[Unit] =
+    for {
+      _ <- applyScalafixMigrations(repo, update).handleErrorWith(e =>
+        logger.warn(s"Could not apply ${update.show} : $e")
+      )
+      repoDir <- workspaceAlg.repoDir(repo)
+      files <- fileAlg.findFilesContaining(
+        repoDir,
+        update.currentVersion,
+        isSourceFile(update, fileExtensions)
+      )
+      noFilesFound = logger.warn("No files found that contain the current version")
+      _ <- files.toNel.fold(noFilesFound)(applyUpdateTo(_, update))
+    } yield ()
 
   def applyUpdateTo[G[_]: Traverse](files: G[File], update: Update): F[Unit] = {
     val actions = UpdateHeuristic.all.map { heuristic =>
@@ -63,10 +62,7 @@ final class EditAlg[F[_]](
   }
 
   def applyScalafixMigrations(repo: Repo, update: Update): F[Unit] =
-    Nel.fromList(scalafix.findMigrations(update)) match {
-      case Some(migrations) =>
-        logger.info(s"Applying migrations: $migrations") >> sbtAlg.runMigrations(repo, migrations)
-      case None =>
-        F.unit
+    Nel.fromList(migrationAlg.findMigrations(update)).traverse_ { migrations =>
+      logger.info(s"Applying migrations: $migrations") >> sbtAlg.runMigrations(repo, migrations)
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,12 +20,12 @@ import caseapp._
 import caseapp.core.Error.MalformedValue
 import caseapp.core.argparser.{ArgParser, SimpleArgParser}
 import cats.implicits._
-import org.http4s.{Http4sLiteralSyntax, Uri}
+import org.http4s.Uri
+import org.http4s.syntax.literals._
 import org.scalasteward.core.application.Cli._
 import org.scalasteward.core.util.ApplicativeThrowable
 
 import scala.concurrent.duration._
-import scala.util.Try
 
 final class Cli[F[_]](implicit F: ApplicativeThrowable[F]) {
   def parseArgs(args: List[String]): F[Args] =
@@ -50,54 +50,48 @@ object Cli {
       disableSandbox: Boolean = false,
       doNotFork: Boolean = false,
       ignoreOptsFiles: Boolean = false,
-      keepCredentials: Boolean = false,
       envVar: List[EnvVar] = Nil,
-      pruneRepos: Boolean = false,
-      processTimeout: FiniteDuration = 10.minutes
+      processTimeout: FiniteDuration = 10.minutes,
+      scalafixMigrations: Option[String] = None,
+      groupMigrations: Option[String] = None,
+      cacheTtl: FiniteDuration = 2.hours,
+      cacheMissDelay: FiniteDuration = 0.milliseconds,
+      bitbucketServerUseDefaultReviewers: Boolean = false
   )
 
   final case class EnvVar(name: String, value: String)
 
-  implicit val envVarParser: SimpleArgParser[EnvVar] =
+  implicit val envVarArgParser: SimpleArgParser[EnvVar] =
     SimpleArgParser.from[EnvVar]("env-var") { s =>
       s.trim.split('=').toList match {
-        case name :: value :: Nil =>
-          Right(EnvVar(name.trim, value.trim))
+        case name :: (value @ _ :: _) =>
+          Right(EnvVar(name.trim, value.mkString("=").trim))
         case _ =>
-          Left(
-            MalformedValue("EnvVar", "The value is expected in the following format: NAME=VALUE.")
-          )
+          val error = "The value is expected in the following format: NAME=VALUE."
+          Left(MalformedValue("EnvVar", error))
       }
+    }
+
+  implicit val finiteDurationArgParser: ArgParser[FiniteDuration] = {
+    ArgParser[String].xmapError(
+      _.toString(),
+      s =>
+        parseFiniteDuration(s).leftMap { throwable =>
+          val error = s"The value is expected in the following format: <length><unit>. ($throwable)"
+          MalformedValue("FiniteDuration", error)
+        }
+    )
+  }
+
+  private def parseFiniteDuration(s: String): Either[Throwable, FiniteDuration] =
+    Either.catchNonFatal(Duration(s)).flatMap {
+      case fd: FiniteDuration => Right(fd)
+      case d                  => Left(new Throwable(s"$d is not a FiniteDuration"))
     }
 
   implicit val uriArgParser: ArgParser[Uri] =
     ArgParser[String].xmapError(
       _.renderString,
       s => Uri.fromString(s).leftMap(pf => MalformedValue("Uri", pf.message))
-    )
-
-  implicit val finiteDurationParser: ArgParser[FiniteDuration] =
-    ArgParser[String].xmapError(
-      _.toString(),
-      s =>
-        Try {
-          Duration(s) match {
-            case fd: FiniteDuration => Right(fd)
-            case _ =>
-              Left(
-                MalformedValue(
-                  "FiniteDuration",
-                  "The value is expected in the following format: <length><unit>"
-                )
-              )
-          }
-        }.getOrElse(
-          Left(
-            MalformedValue(
-              "FiniteDuration",
-              "The value is expected in the following format: <length><unit>"
-            )
-          )
-        )
     )
 }

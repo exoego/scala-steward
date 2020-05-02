@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,14 +17,22 @@
 package org.scalasteward.core
 
 import org.scalasteward.core.data.Update
+import org.scalasteward.core.repoconfig.CommitsConfig
 import org.scalasteward.core.update.show
 
 package object git {
   def branchFor(update: Update): Branch =
     Branch(s"update/${update.name}-${update.nextVersion}")
 
-  def commitMsgFor(update: Update): String =
-    s"Update ${show.oneLiner(update)} to ${update.nextVersion}"
+  def commitMsgFor(update: Update, commitsConfig: CommitsConfig): String = {
+    val artifact = show.oneLiner(update)
+    val defaultMessage = s"Update $artifact to ${update.nextVersion}"
+    commitsConfig.messageOrDefault
+      .replace("${default}", defaultMessage)
+      .replace("${artifactName}", artifact)
+      .replace("${currentVersion}", update.currentVersion)
+      .replace("${nextVersion}", update.nextVersion)
+  }
 
   // man 7 gitrevisions:
   // When you have two commits r1 and r2 you can ask for commits that are

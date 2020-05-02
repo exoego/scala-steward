@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,27 +17,37 @@
 package org.scalasteward.core.update.data
 
 import org.http4s.Uri
-import org.scalasteward.core.data.{Dependency, Update}
-import org.scalasteward.core.update.FilterAlg.RejectionReason
+import org.scalasteward.core.data.{CrossDependency, Update}
 
 sealed trait UpdateState extends Product with Serializable {
-  def dependency: Dependency
+  def crossDependency: CrossDependency
 }
 
 object UpdateState {
-  final case class DependencyUpToDate(dependency: Dependency) extends UpdateState
+  final case class DependencyUpToDate(
+      crossDependency: CrossDependency
+  ) extends UpdateState
 
-  final case class DependencyOutdated(dependency: Dependency, update: Update) extends UpdateState
+  final case class DependencyOutdated(
+      crossDependency: CrossDependency,
+      update: Update.Single
+  ) extends UpdateState
 
-  final case class UpdateRejectedByConfig(dependency: Dependency, rejectionReason: RejectionReason)
-      extends UpdateState
+  final case class PullRequestUpToDate(
+      crossDependency: CrossDependency,
+      update: Update.Single,
+      pullRequest: Uri
+  ) extends UpdateState
 
-  final case class PullRequestUpToDate(dependency: Dependency, update: Update, pullRequest: Uri)
-      extends UpdateState
+  final case class PullRequestOutdated(
+      crossDependency: CrossDependency,
+      update: Update.Single,
+      pullRequest: Uri
+  ) extends UpdateState
 
-  final case class PullRequestOutdated(dependency: Dependency, update: Update, pullRequest: Uri)
-      extends UpdateState
-
-  final case class PullRequestClosed(dependency: Dependency, update: Update, pullRequest: Uri)
-      extends UpdateState
+  final case class PullRequestClosed(
+      crossDependency: CrossDependency,
+      update: Update.Single,
+      pullRequest: Uri
+  ) extends UpdateState
 }

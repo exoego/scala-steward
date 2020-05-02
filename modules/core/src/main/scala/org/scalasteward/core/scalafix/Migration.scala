@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,19 @@
 
 package org.scalasteward.core.scalafix
 
-import org.scalasteward.core.data.Version
+import io.circe.Decoder
+import io.circe.generic.semiauto._
+import org.scalasteward.core.data.{GroupId, Version}
 import org.scalasteward.core.util.Nel
-import scala.util.matching.Regex
 
 final case class Migration(
-    groupId: String,
-    artifactIds: Nel[Regex],
+    groupId: GroupId,
+    artifactIds: Nel[String],
     newVersion: Version,
-    rewriteRules: Nel[String],
-    configuration: Option[String] = None
+    rewriteRules: Nel[String]
 )
+
+object Migration {
+  implicit val migrationDecoder: Decoder[Migration] =
+    deriveDecoder[Migration]
+}
