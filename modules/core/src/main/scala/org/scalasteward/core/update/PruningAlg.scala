@@ -69,14 +69,21 @@ final class PruningAlg[F[_]](implicit
     val depsWithoutResolvers = dependencies.map(_.value).distinct
     for {
       _ <- logger.info(s"Find updates for ${repo.show}")
-      updates0 <- updateAlg.findUpdates(dependencies, repoConfig, None)
+      currentTimeMillis <- dateTimeAlg.currentTimeMillis
+      updates0 <- updateAlg.findUpdates(dependencies, repoConfig, None, currentTimeMillis)
       updateStates0 <- findAllUpdateStates(repo, repoCache, depsWithoutResolvers, updates0)
       outdatedDeps = collectOutdatedDependencies(updateStates0)
       (updateStates1, updates1) <- {
         if (outdatedDeps.isEmpty) F.pure((updateStates0, updates0))
         else
           for {
-            freshUpdates <- ensureFreshUpdates(repoConfig, dependencies, outdatedDeps, updates0)
+            freshUpdates <- ensureFreshUpdates(
+              repoConfig,
+              dependencies,
+              outdatedDeps,
+              updates0,
+              currentTimeMillis
+            )
             freshStates <- findAllUpdateStates(repo, repoCache, depsWithoutResolvers, freshUpdates)
           } yield (freshStates, freshUpdates)
       }
@@ -89,7 +96,8 @@ final class PruningAlg[F[_]](implicit
       repoConfig: RepoConfig,
       dependencies: List[Scope.Dependency],
       outdatedDeps: List[DependencyOutdated],
-      allUpdates: List[Update.Single]
+      allUpdates: List[Update.Single],
+      currentTimeMillis: Long
   ): F[List[Update.Single]] = {
     val unseenUpdates = outdatedDeps.map(_.update)
     val maybeOutdatedDeps = dependencies.filter { d =>
@@ -100,7 +108,9 @@ final class PruningAlg[F[_]](implicit
     val seenUpdates = allUpdates.filterNot { u =>
       maybeOutdatedDeps.exists(_.value === u.crossDependency.head)
     }
-    updateAlg.findUpdates(maybeOutdatedDeps, repoConfig, Some(5.minutes)).map(_ ++ seenUpdates)
+    updateAlg
+      .findUpdates(maybeOutdatedDeps, repoConfig, Some(5.minutes), currentTimeMillis)
+      .map(_ ++ seenUpdates)
   }
 
   private def findAllUpdateStates(

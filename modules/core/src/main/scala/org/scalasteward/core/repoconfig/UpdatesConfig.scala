@@ -38,6 +38,7 @@ final case class UpdatesConfig(
     ignore: List[UpdatePattern] = List.empty,
     limit: Option[PosInt] = None,
     includeScala: Option[Boolean] = None,
+    waitNewReleaseDays: Option[Int] = None,
     fileExtensions: List[String] = List.empty
 ) {
   def keep(update: Update.Single): FilterResult =

@@ -4,6 +4,7 @@ import org.scalasteward.core.TestSyntax._
 import org.scalasteward.core.data.{ArtifactId, GroupId, Update}
 import org.scalasteward.core.mock.MockContext._
 import org.scalasteward.core.mock.MockState
+import org.scalasteward.core.repoconfig.UpdatesConfig
 import org.scalasteward.core.update.GroupMigrations.GroupIdChange
 import org.scalasteward.core.util.Nel
 import org.scalatest.funsuite.AnyFunSuite
@@ -43,8 +44,11 @@ class GroupMigrationsTest extends AnyFunSuite with Matchers {
       Nel.of("0.10.0"),
       Some(GroupId("org.typelevel"))
     )
+    // enough days passed
+    val currentTimeMillis = Long.MaxValue
+    val repoConfig = UpdatesConfig()
     val actual = updateAlg
-      .findUpdate(dependency.withMavenCentral, None)
+      .findUpdate(dependency.withMavenCentral, None, repoConfig, currentTimeMillis)
       .runA(MockState.empty)
       .unsafeRunSync()
     actual shouldBe Some(expected)

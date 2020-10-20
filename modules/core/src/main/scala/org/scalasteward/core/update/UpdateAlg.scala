@@ -20,8 +20,9 @@ import cats.Monad
 import cats.syntax.all._
 import org.scalasteward.core.coursier.VersionsCache
 import org.scalasteward.core.data._
-import org.scalasteward.core.repoconfig.RepoConfig
+import org.scalasteward.core.repoconfig.{RepoConfig, UpdatesConfig}
 import org.scalasteward.core.util.Nel
+
 import scala.concurrent.duration.FiniteDuration
 
 final class UpdateAlg[F[_]](implicit
@@ -32,12 +33,19 @@ final class UpdateAlg[F[_]](implicit
 ) {
   def findUpdate(
       dependency: Scope[Dependency],
-      maxAge: Option[FiniteDuration]
+      maxAge: Option[FiniteDuration],
+      updatesConfig: UpdatesConfig,
+      currentTimeMillis: Long
   ): F[Option[Update.Single]] =
     for {
-      versions <- versionsCache.getVersions(dependency, maxAge)
+      v <- versionsCache.getVersions(dependency, maxAge)
+      VersionAndLastUpdate(versions, maybeLastUpdate) = v
+      waitNewReleaseDays = updatesConfig.waitNewReleaseDays.getOrElse(0)
+      enoughDaysPassed = maybeLastUpdate.forall(
+        _.toEpochMillis < currentTimeMillis - waitNewReleaseDays * 1000 * 60 * 60 * 24
+      )
       current = Version(dependency.value.version)
-      maybeNewerVersions = Nel.fromList(versions.filter(_ > current))
+      maybeNewerVersions = Nel.fromList(versions.filter(_ > current && enoughDaysPassed))
       maybeUpdate = maybeNewerVersions
         .map(vs => Update.Single(CrossDependency(dependency.value), vs.map(_.value)))
         .orElse(groupMigrations.findUpdateWithNewerGroupId(dependency.value))
@@ -46,9 +54,11 @@ final class UpdateAlg[F[_]](implicit
   def findUpdates(
       dependencies: List[Scope.Dependency],
       repoConfig: RepoConfig,
-      maxAge: Option[FiniteDuration]
+      maxAge: Option[FiniteDuration],
+      currentTimeMillis: Long
   ): F[List[Update.Single]] = {
-    val updates = dependencies.traverseFilter(findUpdate(_, maxAge))
+    val updates =
+      dependencies.traverseFilter(findUpdate(_, maxAge, repoConfig.updates, currentTimeMillis))
     updates.flatMap(filterAlg.localFilterMany(repoConfig, _))
   }
 }

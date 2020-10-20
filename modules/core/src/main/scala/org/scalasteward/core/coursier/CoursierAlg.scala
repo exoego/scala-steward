@@ -25,7 +25,14 @@ import coursier.{Fetch, Info, Module, ModuleName, Organization}
 import io.chrisdavenport.log4cats.Logger
 import org.http4s.Uri
 import org.scalasteward.core.data.Resolver.Credentials
-import org.scalasteward.core.data.{Dependency, Resolver, Scope, Version}
+import org.scalasteward.core.data.{
+  Dependency,
+  LastUpdate,
+  Resolver,
+  Scope,
+  Version,
+  VersionAndLastUpdate
+}
 
 /** An interface to [[https://get-coursier.io Coursier]] used for
   * fetching dependency versions and metadata.
@@ -33,7 +40,7 @@ import org.scalasteward.core.data.{Dependency, Resolver, Scope, Version}
 trait CoursierAlg[F[_]] {
   def getArtifactUrl(dependency: Scope.Dependency): F[Option[Uri]]
 
-  def getVersions(dependency: Dependency, resolver: Resolver): F[List[Version]]
+  def getVersions(dependency: Dependency, resolver: Resolver): F[VersionAndLastUpdate]
 
   final def getArtifactIdUrlMapping(dependencies: Scope.Dependencies)(implicit
       F: Applicative[F]
@@ -87,15 +94,33 @@ object CoursierAlg {
         }
       }
 
-      override def getVersions(dependency: Dependency, resolver: Resolver): F[List[Version]] =
+      override def getVersions(
+          dependency: Dependency,
+          resolver: Resolver
+      ): F[VersionAndLastUpdate] =
         toCoursierRepository(resolver) match {
           case Left(message) =>
             logger.error(message) >> F.raiseError(new Throwable(message))
           case Right(repository) =>
             val module = toCoursierModule(dependency)
             repository.versions(module, cacheNoTtl.fetch).run.flatMap {
-              case Left(message)        => F.raiseError(new Throwable(message))
-              case Right((versions, _)) => F.pure(versions.available.map(Version.apply).sorted)
+              case Left(message) => F.raiseError(new Throwable(message))
+              case Right((versions, _)) =>
+                F.pure(
+                  VersionAndLastUpdate(
+                    versions.available.map(Version.apply).sorted,
+                    versions.lastUpdated.map { c =>
+                      LastUpdate(
+                        year = c.year,
+                        month = c.month,
+                        day = c.day,
+                        hour = c.hour,
+                        minute = c.minute,
+                        second = c.second
+                      )
+                    }
+                  )
+                )
             }
         }
 

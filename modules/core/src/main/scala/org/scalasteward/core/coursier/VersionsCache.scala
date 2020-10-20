@@ -21,9 +21,17 @@ import cats.implicits._
 import io.circe.generic.semiauto.deriveCodec
 import io.circe.{Codec, KeyEncoder}
 import org.scalasteward.core.coursier.VersionsCache.{Key, Value}
-import org.scalasteward.core.data.{Dependency, Resolver, Scope, Version}
+import org.scalasteward.core.data.{
+  Dependency,
+  LastUpdate,
+  Resolver,
+  Scope,
+  Version,
+  VersionAndLastUpdate
+}
 import org.scalasteward.core.persistence.KeyValueStore
 import org.scalasteward.core.util.{DateTimeAlg, MonadThrow, Timestamp}
+
 import scala.concurrent.duration.FiniteDuration
 
 final class VersionsCache[F[_]](
@@ -35,31 +43,54 @@ final class VersionsCache[F[_]](
     parallel: Parallel[F],
     F: MonadThrow[F]
 ) {
-  def getVersions(dependency: Scope.Dependency, maxAge: Option[FiniteDuration]): F[List[Version]] =
+  def getVersions(
+      dependency: Scope.Dependency,
+      maxAge: Option[FiniteDuration]
+  ): F[VersionAndLastUpdate] =
     dependency.resolvers
-      .parFlatTraverse(getVersionsImpl(dependency.value, _, maxAge.getOrElse(cacheTtl)))
-      .map(_.distinct.sorted)
+      .parTraverse(getCacheImpl(dependency.value, _, maxAge.getOrElse(cacheTtl)))
+      .map(_.foldLeft(VersionAndLastUpdate(List.empty, None)) { case (acc, e) =>
+        if (
+          acc.lastUpdate
+            .map(_.toEpochMillis)
+            .getOrElse(0L) <= e.lastUpdate.map(_.toEpochMillis).getOrElse(0L)
+        ) {
+          e
+        } else {
+          acc
+        }
+      })
 
-  private def getVersionsImpl(
+  private def getCacheImpl(
       dependency: Dependency,
       resolver: Resolver,
       maxAge: FiniteDuration
-  ): F[List[Version]] =
+  ): F[VersionAndLastUpdate] = {
+    def extract(v: Value) = VersionAndLastUpdate(v.versions, v.lastUpdated)
+
     dateTimeAlg.currentTimestamp.flatMap { now =>
       val key = Key(dependency, resolver)
       store.get(key).flatMap {
         case Some(value) if value.updatedAt.until(now) <= (maxAge * value.maxAgeFactor) =>
-          F.pure(value.versions)
+          F.pure(extract(value))
         case maybeValue =>
           coursierAlg.getVersions(dependency, resolver).attempt.flatMap {
-            case Right(versions) =>
-              store.put(key, Value(now, versions, None)).as(versions)
+            case Right(found) =>
+              store
+                .put(key, Value(now, found.versions, found.lastUpdate, None))
+                .as(found)
             case Left(throwable) =>
-              val versions = maybeValue.map(_.versions).getOrElse(List.empty)
-              store.put(key, Value(now, versions, Some(throwable.toString))).as(versions)
+              val x =
+                maybeValue
+                  .map(p => VersionAndLastUpdate(p.versions, p.lastUpdated))
+                  .getOrElse(VersionAndLastUpdate.empty)
+              store
+                .put(key, Value(now, x.versions, x.lastUpdate, Some(throwable.toString)))
+                .as(x)
           }
       }
     }
+  }
 }
 
 object VersionsCache {
@@ -80,6 +111,7 @@ object VersionsCache {
   final case class Value(
       updatedAt: Timestamp,
       versions: List[Version],
+      lastUpdated: Option[LastUpdate],
       maybeError: Option[String]
   ) {
     def maxAgeFactor: Long =
