@@ -16,20 +16,33 @@
 
 package org.scalasteward.core.repoconfig
 
+import cats.implicits._
 import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
-import org.scalasteward.core.data.GroupId
+import org.scalasteward.core.data.{GroupId, Update}
 
 final case class UpdatePatternWithFrequency(
     groupId: GroupId,
     artifactId: Option[String],
     version: Option[UpdatePattern.Version],
     frequency: PullRequestFrequency
-) {
-  def isWholeGroupIdAllowed: Boolean = artifactId.isEmpty && version.isEmpty
-}
+)
 
 object UpdatePatternWithFrequency {
+  def findFrequencyOverride(
+      patterns: List[UpdatePatternWithFrequency],
+      update: Update.Single
+  ): Option[PullRequestFrequency] = {
+    val byGroupId = patterns.filter(_.groupId === update.groupId)
+    val byArtifactId = byGroupId.filter(_.artifactId.forall(_ === update.artifactId.name))
+    val dependencyFrequency = update.newerVersions.toList
+      .flatMap(newVersion =>
+        byArtifactId.find(_.version.forall(_.matches(newVersion))).map(_.frequency)
+      )
+      .headOption
+    dependencyFrequency
+  }
+
   implicit val updatePatternWithFrequencyDecoder: Decoder[UpdatePatternWithFrequency] =
     deriveDecoder
 
