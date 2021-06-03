@@ -36,6 +36,7 @@ final case class UpdatesConfig(
     pin: List[UpdatePattern] = List.empty,
     allow: List[UpdatePattern] = List.empty,
     ignore: List[UpdatePattern] = List.empty,
+    frequency: List[UpdatePatternWithFrequency] = List.empty,
     limit: Option[NonNegInt] = None,
     fileExtensions: Option[List[String]] = None
 ) {

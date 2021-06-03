@@ -32,6 +32,13 @@ You can add `<YOUR_REPO>/.scala-steward.conf` to configure how Scala Steward upd
 #pullRequests.frequency = "0 0 ? * 3" # every thursday on midnight
 pullRequests.frequency = "7 days"
 
+# If set, these dependencies which match the given patterns would be updated at specific
+# frequency rather than the default frequency `pullRequests.frequency`.
+#
+# Each pattern must have `groupId` and `frequency`, and may have `artifactId` and `version`.
+# Defaults to empty `[]` which mean Scala Steward will use the `pullRequests.frequency` only.
+updates.frequency  = [ { groupId = "com.example", frequency = "7 days" } ]
+
 # Only these dependencies which match the given patterns are updated.
 #
 # Each pattern must have `groupId`, and may have `artifactId` and `version`.
