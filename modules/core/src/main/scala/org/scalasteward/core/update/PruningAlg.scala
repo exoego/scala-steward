@@ -160,25 +160,24 @@ final class PruningAlg[F[_]](implicit
       lastPullRequestCreatedAt <- pullRequestRepository.lastPullRequestCreatedAt(repo)
       now <- dateTimeAlg.currentTimestamp
       filtered <- updates.traverse { update =>
-        val perDepFrequency = UpdatePatternWithFrequency.findFrequencyOverride(repoConfig.updates.frequency, update)
-        perDepFrequency match {
-          case None => Option.empty[Update.Single].pure[F]
-          case Some(frequency) =>
-            if (frequency === PullRequestFrequency.Asap) Option(update).pure[F]
+        val perDepFrequency =
+          UpdatePatternWithFrequency.findFrequencyOverride(repoConfig.updates.frequency, update)
+        perDepFrequency.fold(Option(update).pure[F]) { frequency =>
+          if (frequency === PullRequestFrequency.Asap) Option(update).pure[F]
+          else {
+            val ignoring = "Ignoring outdated dependency"
+            if (!frequency.onSchedule(now))
+              logger.info(s"$ignoring according to $frequency").as(Option.empty[Update.Single])
             else {
-              val ignoring = "Ignoring outdated dependency"
-              if (!frequency.onSchedule(now))
-                logger.info(s"$ignoring according to $frequency").as(Option.empty[Update.Single])
-              else {
-                val maybeWaitingTime = lastPullRequestCreatedAt.flatMap(frequency.waitingTime(_, now))
-                maybeWaitingTime match {
-                  case None => Option(update).pure[F]
-                  case Some(waitingTime) =>
-                    val message = s"$ignoring for ${dateTime.showDuration(waitingTime)}"
-                    logger.info(message).as(Option.empty[Update.Single])
-                }
+              val maybeWaitingTime = lastPullRequestCreatedAt.flatMap(frequency.waitingTime(_, now))
+              maybeWaitingTime match {
+                case None => Option(update).pure[F]
+                case Some(waitingTime) =>
+                  val message = s"$ignoring for ${dateTime.showDuration(waitingTime)}"
+                  logger.info(message).as(Option.empty[Update.Single])
               }
             }
+          }
         }
       }
     } yield (repoNeedsAttention && filtered.nonEmpty, filtered.flatten)
