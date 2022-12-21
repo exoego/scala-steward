@@ -2,20 +2,19 @@ name: Link checker
 
 on: push
 
-#env:
-#  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#
 jobs:
-  build:
-    name: Build and Test
+  link-check:
+    runs-on: ubuntu-latest
+    name: Link checker
     steps:
       - uses: actions/checkout@v2
         with:
           fetch-depth: 0
+      - run: echo ${{ github.ref_name }}
       - uses: gaurav-nelson/github-action-markdown-link-check@v1
         with:
           config-file: 'mlc_config.json'
           folder-path: 'docs' # comma separated
           max-depth: 2
-          # check-modified-files-only: ${{ github.event_name == 'pull_request' && 'yes' || 'no' }}
+          check-modified-files-only: ${{ github.ref_name == 'main' && 'no' || 'yes' }}
           base-branch: main
