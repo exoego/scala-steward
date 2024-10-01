@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ import org.scalasteward.core.update.data.UpdateState
 import org.scalasteward.core.update.data.UpdateState._
 import org.scalasteward.core.util
 import org.scalasteward.core.util.{dateTime, DateTimeAlg, Nel, Timestamp}
-import org.scalasteward.core.vcs.data.Repo
 import org.typelevel.log4cats.Logger
 import scala.concurrent.duration._
 
@@ -146,10 +145,7 @@ final class PruningAlg[F[_]](implicit
             artifactLastPrCreatedAt =
               lastPullRequestCreatedAtByArtifact.get(s.update.groupId -> s.update.mainArtifactId),
             repoConfig
-          ).map {
-            case true  => Some(s)
-            case false => None
-          }
+          ).map(Option.when(_)(s))
         case s: PullRequestOutdated => Option[WithUpdate](s).pure[F]
         case _                      => F.pure(None)
       }
@@ -174,11 +170,9 @@ final class PruningAlg[F[_]](implicit
         .collectFirstSome { groupRepoConfig =>
           val matchResult = UpdatePattern
             .findMatch(List(groupRepoConfig.dependency), dependencyOutdated.update, include = true)
-          if (matchResult.byArtifactId.nonEmpty && matchResult.filteredVersions.nonEmpty) {
-            Some((groupRepoConfig.pullRequests.frequency, artifactLastPrCreatedAt))
-          } else {
-            None
-          }
+          Option.when(matchResult.byArtifactId.nonEmpty && matchResult.filteredVersions.nonEmpty)(
+            (groupRepoConfig.pullRequests.frequency, artifactLastPrCreatedAt)
+          )
         }
         .getOrElse((repoConfig.pullRequests.frequency, repoLastPrCreatedAt))
     val frequency = frequencyz.getOrElse(PullRequestFrequency.Asap)

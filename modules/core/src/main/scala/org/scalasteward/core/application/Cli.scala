@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,23 +18,37 @@ package org.scalasteward.core.application
 
 import better.files.File
 import cats.data.Validated
+import cats.effect.ExitCode
 import cats.syntax.all._
 import com.monovore.decline.Opts.{flag, option, options}
 import com.monovore.decline._
 import org.http4s.Uri
 import org.http4s.syntax.literals._
 import org.scalasteward.core.application.Config._
+import org.scalasteward.core.application.ExitCodePolicy.{
+  SuccessIfAnyRepoSucceeds,
+  SuccessOnlyIfAllReposSucceed
+}
 import org.scalasteward.core.data.Resolver
+import org.scalasteward.core.forge.ForgeType
+import org.scalasteward.core.forge.ForgeType.{AzureRepos, GitHub}
+import org.scalasteward.core.forge.github.GitHubApp
 import org.scalasteward.core.git.Author
 import org.scalasteward.core.util.Nel
 import org.scalasteward.core.util.dateTime.renderFiniteDuration
-import org.scalasteward.core.vcs.VCSType
-import org.scalasteward.core.vcs.VCSType.GitHub
-import org.scalasteward.core.vcs.github.GitHubApp
+
 import scala.concurrent.duration._
 
 object Cli {
   final case class EnvVar(name: String, value: String)
+
+  object name {
+    val forgeApiHost = "forge-api-host"
+    val forgeLogin = "forge-login"
+    val forgeType = "forge-type"
+    val maxBufferSize = "max-buffer-size"
+    val processTimeout = "process-timeout"
+  }
 
   implicit val envVarArgument: Argument[EnvVar] =
     Argument.from("name=value") { s =>
@@ -57,9 +71,9 @@ object Cli {
       Validated.fromEither(Uri.fromString(s).leftMap(_.message)).toValidatedNel
     }
 
-  implicit val vcsTypeArgument: Argument[VCSType] =
-    Argument.from("vcs-type") { s =>
-      Validated.fromEither(VCSType.parse(s)).toValidatedNel
+  implicit val forgeTypeArgument: Argument[ForgeType] =
+    Argument.from(name.forgeType) { s =>
+      Validated.fromEither(ForgeType.parse(s)).toValidatedNel
     }
 
   private val multiple = "(can be used multiple times)"
@@ -67,8 +81,8 @@ object Cli {
   private val workspace: Opts[File] =
     option[File]("workspace", "Location for cache and temporary files")
 
-  private val reposFile: Opts[File] =
-    option[File]("repos-file", "A markdown formatted file with a repository list")
+  private val reposFiles: Opts[Nel[Uri]] =
+    options[Uri]("repos-file", s"A markdown formatted file with a repository list $multiple")
 
   private val gitAuthorName: Opts[String] = {
     val default = "Scala Steward"
@@ -94,18 +108,40 @@ object Cli {
   private val gitCfg: Opts[GitCfg] =
     (gitAuthor, gitAskPass, signCommits).mapN(GitCfg.apply)
 
-  private val vcsType = {
-    val help = VCSType.all.map(_.asString).mkString("One of ", ", ", "") +
+  private val vcsType =
+    option[ForgeType](
+      "vcs-type",
+      s"deprecated in favor of --${name.forgeType}",
+      visibility = Visibility.Partial
+    ).validate(s"--vcs-type is deprecated; use --${name.forgeType} instead")(_ => false)
+
+  private val forgeType = {
+    val help = ForgeType.all.map(_.asString).mkString("One of ", ", ", "") +
       s"; default: ${GitHub.asString}"
-    option[VCSType]("vcs-type", help).withDefault(GitHub)
+    option[ForgeType](name.forgeType, help).orElse(vcsType).withDefault(GitHub)
   }
 
-  private val vcsApiHost: Opts[Uri] =
-    option[Uri]("vcs-api-host", s"API URL of the git hoster; default: ${GitHub.publicApiBaseUrl}")
+  private val vcsApiHost =
+    option[Uri](
+      "vcs-api-host",
+      s"deprecated in favor of --${name.forgeApiHost}",
+      visibility = Visibility.Partial
+    ).validate(s"--vcs-api-host is deprecated; use --${name.forgeApiHost} instead")(_ => false)
+
+  private val forgeApiHost: Opts[Uri] =
+    option[Uri](name.forgeApiHost, s"API URL of the forge; default: ${GitHub.publicApiBaseUrl}")
+      .orElse(vcsApiHost)
       .withDefault(GitHub.publicApiBaseUrl)
 
-  private val vcsLogin: Opts[String] =
-    option[String]("vcs-login", "The user name for the git hoster")
+  private val vcsLogin =
+    option[String](
+      "vcs-login",
+      s"deprecated in favor of --${name.forgeLogin}",
+      visibility = Visibility.Partial
+    ).validate(s"--vcs-login is deprecated; use --${name.forgeLogin} instead")(_ => false)
+
+  private val forgeLogin: Opts[String] =
+    option[String](name.forgeLogin, "The user name for the forge").orElse(vcsLogin)
 
   private val doNotFork: Opts[Boolean] =
     flag("do-not-fork", "Whether to not push the update branches to a fork; default: false").orFalse
@@ -113,11 +149,18 @@ object Cli {
   private val addPrLabels: Opts[Boolean] =
     flag(
       "add-labels",
-      "Whether to add labels on pull or merge requests (if supported by git hoster)"
+      "Whether to add labels on pull or merge requests (if supported by the forge)"
     ).orFalse
 
-  private val vcsCfg: Opts[VCSCfg] =
-    (vcsType, vcsApiHost, vcsLogin, doNotFork, addPrLabels).mapN(VCSCfg.apply)
+  private val forgeCfg: Opts[ForgeCfg] =
+    (forgeType, forgeApiHost, forgeLogin, doNotFork, addPrLabels)
+      .mapN(ForgeCfg.apply)
+      .validate(
+        s"${ForgeType.allNot(_.supportsForking)} do not support fork mode"
+      )(cfg => cfg.tpe.supportsForking || cfg.doNotFork)
+      .validate(
+        s"${ForgeType.allNot(_.supportsLabels)} do not support pull request labels"
+      )(cfg => cfg.tpe.supportsLabels || !cfg.addLabels)
 
   private val ignoreOptsFiles: Opts[Boolean] =
     flag(
@@ -134,7 +177,7 @@ object Cli {
     val default = 10.minutes
     val help =
       s"Timeout for external process invocations; default: ${renderFiniteDuration(default)}"
-    option[FiniteDuration]("process-timeout", help).withDefault(default)
+    option[FiniteDuration](name.processTimeout, help).withDefault(default)
   }
 
   private val whitelist: Opts[List[String]] =
@@ -159,10 +202,10 @@ object Cli {
     (whitelist, readOnly, enableSandbox).mapN(SandboxCfg.apply)
 
   private val maxBufferSize: Opts[Int] = {
-    val default = 8192
+    val default = 32768
     val help =
       s"Size of the buffer for the output of an external process in lines; default: $default"
-    option[Int]("max-buffer-size", help).withDefault(default)
+    option[Int](name.maxBufferSize, help).withDefault(default)
   }
 
   private val processCfg: Opts[ProcessCfg] =
@@ -180,13 +223,13 @@ object Cli {
   private val scalafixMigrations: Opts[List[Uri]] =
     options[Uri](
       "scalafix-migrations",
-      s"Additional scalafix migrations configuration file $multiple"
+      s"Additional Scalafix migrations configuration file $multiple"
     ).orEmpty
 
   private val disableDefaultScalafixMigrations: Opts[Boolean] =
     flag(
       "disable-default-scalafix-migrations",
-      "Whether to disable the default scalafix migration file; default: false"
+      "Whether to disable the default Scalafix migration file; default: false"
     ).orFalse
 
   private val scalafixCfg: Opts[ScalafixCfg] =
@@ -243,14 +286,28 @@ object Cli {
       "When set, the number of required reviewers for a merge request will be set to this number (non-negative integer).  Is only used in the context of gitlab-merge-when-pipeline-succeeds being enabled, and requires that the configured access token have the appropriate privileges.  Also requires a Gitlab Premium subscription."
     ).validate("Required reviewers must be non-negative")(_ >= 0).orNone
 
+  private val gitlabRemoveSourceBranch: Opts[Boolean] =
+    flag(
+      "gitlab-remove-source-branch",
+      "Flag indicating if a merge request should remove the source branch when merging."
+    ).orFalse
+
   private val gitLabCfg: Opts[GitLabCfg] =
-    (gitlabMergeWhenPipelineSucceeds, gitlabRequiredReviewers).mapN(GitLabCfg.apply)
+    (gitlabMergeWhenPipelineSucceeds, gitlabRequiredReviewers, gitlabRemoveSourceBranch).mapN(
+      GitLabCfg.apply
+    )
 
   private val githubAppId: Opts[Long] =
-    option[Long]("github-app-id", "GitHub application id")
+    option[Long](
+      "github-app-id",
+      "GitHub application id. Repos accessible by this app are added to the repos in repos.md. git-ask-pass is still required."
+    )
 
   private val githubAppKeyFile: Opts[File] =
-    option[File]("github-app-key-file", "GitHub application key file")
+    option[File](
+      "github-app-key-file",
+      "GitHub application key file. Repos accessible by this app are added to the repos in repos.md. git-ask-pass is still required."
+    )
 
   private val gitHubApp: Opts[Option[GitHubApp]] =
     (githubAppId, githubAppKeyFile).mapN(GitHubApp.apply).orNone
@@ -258,13 +315,11 @@ object Cli {
   private val azureReposOrganization: Opts[Option[String]] =
     option[String](
       "azure-repos-organization",
-      "The Azure organization (required when vcs type is azure-repos)"
-    ).validate("required when vcs type is azure-repos")(organization =>
-      if (vcsTypeArgument.toString() === "azure-repos") organization.nonEmpty else true
+      s"The Azure organization (required when --${name.forgeType} is ${AzureRepos.asString})"
     ).orNone
 
-  private val azureReposConfig: Opts[AzureReposConfig] =
-    azureReposOrganization.map(AzureReposConfig.apply)
+  private val azureReposCfg: Opts[AzureReposCfg] =
+    azureReposOrganization.map(AzureReposCfg.apply)
 
   private val refreshBackoffPeriod: Opts[FiniteDuration] = {
     val default = 0.days
@@ -288,20 +343,18 @@ object Cli {
       .withDefault(default)
   }
 
-  private val configFile: Opts[File] =
-    Opts.argument[File]()
+  private val exitCodePolicy: Opts[ExitCodePolicy] = flag(
+    "exit-code-success-if-any-repo-succeeds",
+    s"Whether the Scala Steward process should exit with success (exit code ${ExitCode.Success.code}) if any repo succeeds; default: false"
+  ).orFalse.map { ifAnyRepoSucceeds =>
+    if (ifAnyRepoSucceeds) SuccessIfAnyRepoSucceeds else SuccessOnlyIfAllReposSucceed
+  }
 
-  private val validateConfigFile: Opts[File] =
-    Opts.subcommand(
-      name = "validate-repo-config",
-      help = "Validate the repo config file and exit; report errors if any"
-    )(configFile)
-
-  private val configOpts: Opts[Config] = (
+  private val regular: Opts[Usage] = (
     workspace,
-    reposFile,
+    reposFiles,
     gitCfg,
-    vcsCfg,
+    forgeCfg,
     ignoreOptsFiles,
     processCfg,
     repoConfigCfg,
@@ -311,34 +364,42 @@ object Cli {
     bitbucketCfg,
     bitbucketServerCfg,
     gitLabCfg,
-    azureReposConfig,
+    azureReposCfg,
     gitHubApp,
     urlCheckerTestUrls,
     defaultMavenRepo,
-    refreshBackoffPeriod
-  ).mapN(Config.apply)
+    refreshBackoffPeriod,
+    exitCodePolicy
+  ).mapN(Config.apply).map(Usage.Regular.apply)
 
-  val command: Command[StewardUsage] =
-    Command("scala-steward", "")(
-      validateConfigFile
-        .map(StewardUsage.ValidateRepoConfig)
-        .orElse(
-          configOpts
-            .map(StewardUsage.Regular)
-        )
-    )
+  private val validateRepoConfig: Opts[Usage] =
+    Opts
+      .subcommand(
+        name = "validate-repo-config",
+        help = "Validate the repo config file and exit; report errors if any"
+      )(Opts.argument[File]())
+      .map(Usage.ValidateRepoConfig.apply)
+
+  val command: Command[Usage] =
+    Command("scala-steward", "")(regular.orElse(validateRepoConfig))
 
   sealed trait ParseResult extends Product with Serializable
   object ParseResult {
-    final case class Success(config: StewardUsage) extends ParseResult
+    final case class Success(usage: Usage) extends ParseResult
     final case class Help(help: String) extends ParseResult
     final case class Error(error: String) extends ParseResult
+  }
+
+  sealed trait Usage extends Product with Serializable
+  object Usage {
+    final case class Regular(config: Config) extends Usage
+    final case class ValidateRepoConfig(file: File) extends Usage
   }
 
   def parseArgs(args: List[String]): ParseResult =
     command.parse(args) match {
       case Left(help) if help.errors.isEmpty => ParseResult.Help(help.toString)
       case Left(help)                        => ParseResult.Error(help.toString)
-      case Right(config)                     => ParseResult.Success(config)
+      case Right(usage)                      => ParseResult.Success(usage)
     }
 }

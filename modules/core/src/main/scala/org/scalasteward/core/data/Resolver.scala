@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,7 +59,6 @@ object Resolver {
   val mavenCentral: MavenRepository =
     MavenRepository("public", "https://repo1.maven.org/maven2/", None, Nil)
 
-  @annotation.nowarn("cat=unused-locals")
   implicit val resolverCodec: Codec[Resolver] = {
     implicit val customConfig: Configuration = Configuration.default.withDefaults
     deriveConfiguredCodec

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@
 
 package org.scalasteward.core.application
 
-import better.files.File
 import cats.effect.{ExitCode, Sync}
 import cats.syntax.all._
 import fs2.Stream
-import org.scalasteward.core.buildtool.sbt.SbtAlg
+import org.scalasteward.core.data.Repo
+import org.scalasteward.core.forge.github.{GitHubApp, GitHubAppApiAlg, GitHubAuthAlg}
 import org.scalasteward.core.git.GitAlg
 import org.scalasteward.core.io.{FileAlg, WorkspaceAlg}
 import org.scalasteward.core.nurture.NurtureAlg
@@ -29,8 +29,6 @@ import org.scalasteward.core.update.PruningAlg
 import org.scalasteward.core.util
 import org.scalasteward.core.util.DateTimeAlg
 import org.scalasteward.core.util.logger.LoggerOps
-import org.scalasteward.core.vcs.data.Repo
-import org.scalasteward.core.vcs.github.{GitHubApp, GitHubAppApiAlg, GitHubAuthAlg}
 import org.typelevel.log4cats.Logger
 import scala.concurrent.duration._
 
@@ -44,17 +42,11 @@ final class StewardAlg[F[_]](config: Config)(implicit
     nurtureAlg: NurtureAlg[F],
     pruningAlg: PruningAlg[F],
     repoCacheAlg: RepoCacheAlg[F],
-    sbtAlg: SbtAlg[F],
+    reposFilesLoader: ReposFilesLoader[F],
     selfCheckAlg: SelfCheckAlg[F],
     workspaceAlg: WorkspaceAlg[F],
     F: Sync[F]
 ) {
-  private def readRepos(reposFile: File): Stream[F, Repo] =
-    Stream
-      .eval(fileAlg.readFile(reposFile).map(_.getOrElse("")))
-      .flatMap(content => Stream.fromIterator(content.linesIterator, 1024))
-      .mapFilter(Repo.parse)
-
   private def getGitHubAppRepos(githubApp: GitHubApp): Stream[F, Repo] =
     Stream.evals[F, List, Repo] {
       for {
@@ -94,22 +86,20 @@ final class StewardAlg[F[_]](config: Config)(implicit
     logger.infoTotalTime("run") {
       for {
         _ <- selfCheckAlg.checkAll
-        _ <- workspaceAlg.cleanWorkspace
-        exitCode <- sbtAlg.addGlobalPlugins.surround {
+        _ <- workspaceAlg.removeAnyRunSpecificFiles
+        exitCode <-
           (config.githubApp.map(getGitHubAppRepos).getOrElse(Stream.empty) ++
-            readRepos(config.reposFile))
-            .evalMap(steward)
+            reposFilesLoader.loadAll(config.reposFiles))
+            .evalMap(repo => steward(repo).map(_.bimap(repo -> _, _ => repo)))
             .compile
-            .foldSemigroup
-            .flatMap {
-              case Some(result) => result.fold(_ => ExitCode.Error, _ => ExitCode.Success).pure[F]
-              case None =>
-                val msg = "No repos specified. " +
-                  s"Check the formatting of ${config.reposFile.pathAsString}. " +
-                  s"""The format is "- $$owner/$$repo" or "- $$owner/$$repo:$$branch"."""
-                logger.warn(msg).as(ExitCode.Success)
+            .toList
+            .flatMap { results =>
+              val runResults = RunResults(results)
+              for {
+                summaryFile <- workspaceAlg.runSummaryFile
+                _ <- fileAlg.writeFile(summaryFile, runResults.markdownSummary)
+              } yield config.exitCodePolicy.exitCodeFor(runResults)
             }
-        }
       } yield exitCode
     }
 }

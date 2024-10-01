@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,13 @@ package org.scalasteward.core.buildtool.sbt
 import cats.implicits._
 import io.circe.Decoder
 import io.circe.parser._
-import org.scalasteward.core.buildtool.sbt.data.SbtVersion
 import org.scalasteward.core.data._
 
 object parser {
-  def parseBuildProperties(s: String): Option[SbtVersion] =
-    """sbt.version\s*=\s*(.+)""".r.findFirstMatchIn(s).map(_.group(1)).map(SbtVersion.apply)
+  private val regex = """sbt.version\s*=\s*(\S+)""".r
+
+  def parseBuildProperties(s: String): Option[Version] =
+    regex.findFirstMatchIn(s).map(_.group(1)).map(Version.apply)
 
   /** Parses the output of our own `stewardDependencies` task. */
   def parseDependencies(lines: List[String]): List[Scope.Dependencies] = {
@@ -32,8 +33,9 @@ object parser {
     val decoder = Decoder[Dependency].either(Decoder[Resolver])
     chunks.mapFilter { chunk =>
       val (dependencies, resolvers) = chunk.toList.flatMap(decode(_)(decoder).toList).separate
-      if (dependencies.isEmpty || resolvers.isEmpty) None
-      else Some(Scope(dependencies, resolvers.sorted))
+      Option.when(dependencies.nonEmpty && resolvers.nonEmpty)(
+        Scope(dependencies, resolvers.sorted)
+      )
     }.toList
   }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,22 +34,23 @@ final class UpdateAlg[F[_]](implicit
     versionsCache: VersionsCache[F],
     F: Monad[F]
 ) {
-  def findUpdate(
+  private def findUpdate(
       dependency: Scope[Dependency],
+      repoConfig: RepoConfig,
       maxAge: Option[FiniteDuration]
   ): F[Option[Update.ForArtifactId]] =
     findUpdateWithoutMigration(dependency, maxAge)
+      .flatMapF(filterAlg.localFilterSingle(repoConfig, _))
       .orElse(findUpdateWithMigration(dependency, maxAge))
+      .flatMapF(filterAlg.localFilterSingle(repoConfig, _))
       .value
 
   def findUpdates(
       dependencies: List[Scope.Dependency],
       repoConfig: RepoConfig,
       maxAge: Option[FiniteDuration]
-  ): F[List[Update.ForArtifactId]] = {
-    val updates = dependencies.parTraverseFilter(findUpdate(_, maxAge))
-    updates.flatMap(filterAlg.localFilterMany(repoConfig, _))
-  }
+  ): F[List[Update.ForArtifactId]] =
+    dependencies.parTraverseFilter(findUpdate(_, repoConfig, maxAge))
 
   private def findUpdateWithoutMigration(
       dependency: Scope[Dependency],
@@ -65,14 +66,14 @@ final class UpdateAlg[F[_]](implicit
   ): OptionT[F, Update.ForArtifactId] =
     OptionT.fromOption(artifactMigrationsFinder.findArtifactChange(dependency.value)).flatMap {
       artifactChange =>
-        findNewerVersions(dependency.map(migrateDependency(_, artifactChange)), maxAge).map {
-          newerVersions =>
-            Update.ForArtifactId(
-              CrossDependency(dependency.value),
-              newerVersions,
-              Some(artifactChange.groupIdAfter),
-              Some(artifactChange.artifactIdAfter)
-            )
+        val migratedDependency = migrateDependency(dependency.value, artifactChange)
+        findNewerVersions(dependency.as(migratedDependency), maxAge).map { newerVersions =>
+          Update.ForArtifactId(
+            CrossDependency(dependency.value),
+            newerVersions,
+            Some(artifactChange.groupIdAfter),
+            Some(artifactChange.artifactIdAfter)
+          )
         }
     }
 
@@ -93,7 +94,7 @@ object UpdateAlg {
       update.artifactIds.contains_(dependency.artifactId)
     }
 
-  def migrateArtifactId(artifactId: ArtifactId, newName: String): ArtifactId =
+  private def migrateArtifactId(artifactId: ArtifactId, newName: String): ArtifactId =
     ArtifactId(newName, artifactId.maybeCrossName.map(_.replace(artifactId.name, newName)))
 
   def migrateDependency(dependency: Dependency, change: ArtifactChange): Dependency =

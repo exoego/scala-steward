@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,33 +16,33 @@
 
 package org.scalasteward.core.nurture
 
-import cats.Id
 import cats.effect.Concurrent
-import cats.implicits._
-import org.scalasteward.core.application.Config.VCSCfg
+import cats.syntax.all._
+import cats.{Applicative, Id}
+import org.scalasteward.core.application.Config.ForgeCfg
 import org.scalasteward.core.coursier.CoursierAlg
 import org.scalasteward.core.data.ProcessResult.{Created, Ignored, Updated}
 import org.scalasteward.core.data._
 import org.scalasteward.core.edit.{EditAlg, EditAttempt}
+import org.scalasteward.core.forge.data.NewPullRequestData.{filterLabels, labelsFor}
+import org.scalasteward.core.forge.data._
+import org.scalasteward.core.forge.{ForgeApiAlg, ForgeRepoAlg}
 import org.scalasteward.core.git.{Branch, Commit, GitAlg}
 import org.scalasteward.core.repoconfig.PullRequestUpdateStrategy
-import org.scalasteward.core.util.{Nel, UrlChecker}
 import org.scalasteward.core.util.logger.LoggerOps
-import org.scalasteward.core.vcs.data._
-import org.scalasteward.core.vcs.{VCSApiAlg, VCSExtraAlg, VCSRepoAlg}
-import org.scalasteward.core.{git, util, vcs}
+import org.scalasteward.core.util.{Nel, UrlChecker}
+import org.scalasteward.core.{git, util}
 import org.typelevel.log4cats.Logger
-import cats.Applicative
 
-final class NurtureAlg[F[_]](config: VCSCfg)(implicit
+final class NurtureAlg[F[_]](config: ForgeCfg)(implicit
     coursierAlg: CoursierAlg[F],
     editAlg: EditAlg[F],
+    forgeApiAlg: ForgeApiAlg[F],
+    forgeRepoAlg: ForgeRepoAlg[F],
     gitAlg: GitAlg[F],
     logger: Logger[F],
     pullRequestRepository: PullRequestRepository[F],
-    vcsApiAlg: VCSApiAlg[F],
-    vcsExtraAlg: VCSExtraAlg[F],
-    vcsRepoAlg: VCSRepoAlg[F],
+    updateInfoUrlFinder: UpdateInfoUrlFinder[F],
     urlChecker: UrlChecker[F],
     F: Concurrent[F]
 ) {
@@ -60,8 +60,8 @@ final class NurtureAlg[F[_]](config: VCSCfg)(implicit
 
   private def cloneAndSync(repo: Repo, fork: RepoOut): F[Branch] =
     for {
-      _ <- gitAlg.cloneExists(repo).ifM(F.unit, vcsRepoAlg.cloneAndSync(repo, fork))
-      baseBranch <- vcsApiAlg.parentOrRepo(fork, config.doNotFork).map(_.default_branch)
+      _ <- gitAlg.cloneExists(repo).ifM(F.unit, forgeRepoAlg.cloneAndSync(repo, fork))
+      baseBranch <- forgeApiAlg.parentOrRepo(fork, config.doNotFork).map(_.default_branch)
     } yield baseBranch
 
   private def updateDependencies(
@@ -92,14 +92,14 @@ final class NurtureAlg[F[_]](config: VCSCfg)(implicit
   private def processUpdate(data: UpdateData): F[ProcessResult] =
     for {
       _ <- logger.info(s"Process update ${data.update.show}")
-      head = vcs.listingBranch(config.tpe, data.fork, data.updateBranch)
-      pullRequests <- vcsApiAlg.listPullRequests(data.repo, head, data.baseBranch)
+      head = config.tpe.pullRequestHeadFor(data.fork, data.updateBranch)
+      pullRequests <- forgeApiAlg.listPullRequests(data.repo, head, data.baseBranch)
       result <- pullRequests.headOption match {
         case Some(pr) if pr.state.isClosed && data.update.isInstanceOf[Update.Single] =>
           logger.info(s"PR ${pr.html_url} is closed") >>
             deleteRemoteBranch(data.repo, data.updateBranch).as(Ignored)
         case Some(pr) if !pr.state.isClosed =>
-          logger.info(s"Found PR ${pr.html_url}") >> updatePullRequest(data)
+          logger.info(s"Found PR ${pr.html_url}") >> updatePullRequest(data, pr.number)
         case _ =>
           applyNewUpdate(data).flatTap {
             case Created(newPrNumber) => closeObsoletePullRequests(data, newPrNumber)
@@ -138,15 +138,15 @@ final class NurtureAlg[F[_]](config: VCSCfg)(implicit
     ) {
       for {
         _ <- pullRequestRepository.changeState(data.repo, oldPr.url, PullRequestState.Closed)
-        comment = s"Superseded by ${vcsApiAlg.referencePullRequest(newNumber)}."
-        _ <- vcsApiAlg.commentPullRequest(data.repo, oldPr.number, comment)
+        comment = s"Superseded by ${forgeApiAlg.referencePullRequest(newNumber)}."
+        _ <- forgeApiAlg.commentPullRequest(data.repo, oldPr.number, comment)
         oldRemoteBranch = oldPr.updateBranch.withPrefix("origin/")
         oldBranchExists <- gitAlg.branchExists(data.repo, oldRemoteBranch)
         authors <-
           if (oldBranchExists) gitAlg.branchAuthors(data.repo, oldRemoteBranch, data.baseBranch)
           else List.empty.pure[F]
         _ <- F.whenA(authors.size <= 1) {
-          vcsApiAlg.closePullRequest(data.repo, oldPr.number) >>
+          forgeApiAlg.closePullRequest(data.repo, oldPr.number) >>
             deleteRemoteBranch(data.repo, oldPr.updateBranch)
         }
       } yield ()
@@ -194,50 +194,60 @@ final class NurtureAlg[F[_]](config: VCSCfg)(implicit
       _.updates.flatMap(dependenciesUpdatedWithNextAndCurrentVersion(_))
     )
 
-  private def createPullRequest(data: UpdateData, edits: List[EditAttempt]): F[ProcessResult] =
+  private[nurture] def preparePullRequest(
+      data: UpdateData,
+      edits: List[EditAttempt]
+  ): F[NewPullRequestData] =
     for {
-      _ <- logger.info(s"Create PR ${data.updateBranch.name}")
+      _ <- F.unit
       dependenciesWithNextVersion = dependenciesUpdatedWithNextAndCurrentVersion(data.update)
       resolvers = data.repoData.cache.dependencyInfos.flatMap(_.resolvers)
-      dependencyScope = Scope(
-        value = dependenciesWithNextVersion.map { case (_, dependency) => dependency },
-        resolvers = resolvers
-      )
-      artifactIdToUrl <- coursierAlg.getArtifactIdUrlMapping(dependencyScope)
-      existingArtifactUrlsList <- artifactIdToUrl.toList.filterA { case (_, uri) =>
-        urlChecker.exists(uri)
-      }
-      existingArtifactUrlsMap = existingArtifactUrlsList.toMap
-      releaseRelatedUrls <- dependenciesWithNextVersion.flatTraverse {
+      dependencyToMetadata <- dependenciesWithNextVersion
+        .traverse { case (_, dependency) =>
+          coursierAlg
+            .getMetadata(dependency, resolvers)
+            .flatMap(_.filterUrls(urlChecker.exists))
+            .tupleLeft(dependency)
+        }
+        .map(_.toMap)
+      artifactIdToUrl = dependencyToMetadata.toList.mapFilter { case (dependency, metadata) =>
+        metadata.repoUrl.tupleLeft(dependency.artifactId.name)
+      }.toMap
+      artifactIdToUpdateInfoUrls <- dependenciesWithNextVersion.flatTraverse {
         case (currentVersion, dependency) =>
-          existingArtifactUrlsMap
-            .get(dependency.artifactId.name)
-            .toList
-            .traverse(uri =>
-              vcsExtraAlg
-                .getReleaseRelatedUrls(uri, currentVersion, dependency.version)
-                .tupleLeft(dependency.artifactId.name)
-            )
+          dependencyToMetadata.get(dependency).toList.traverse { metadata =>
+            updateInfoUrlFinder
+              .findUpdateInfoUrls(metadata, Version.Update(currentVersion, dependency.version))
+              .tupleLeft(dependency.artifactId.name)
+          }
       }
+      artifactIdToVersionScheme = dependencyToMetadata.toList.mapFilter {
+        case (dependency, metadata) =>
+          metadata.versionScheme.tupleLeft(dependency.artifactId.name)
+      }.toMap
       filesWithOldVersion <-
         data.update
           .on(u => List(u.currentVersion.value), _.updates.map(_.currentVersion.value))
           .flatTraverse(gitAlg.findFilesContaining(data.repo, _))
           .map(_.distinct)
-      branchName = vcs.createBranch(config.tpe, data.fork, data.updateBranch)
-      requestData = NewPullRequestData.from(
-        data,
-        branchName,
-        edits,
-        existingArtifactUrlsMap,
-        releaseRelatedUrls.toMap,
-        filesWithOldVersion,
-        data.repoData.config.pullRequests.includeMatchedLabels
-      )
-      pr <- vcsApiAlg.createPullRequest(data.repo, requestData)
-      _ <- vcsApiAlg
-        .labelPullRequest(data.repo, pr.number, requestData.labels)
-        .whenA(config.addLabels && requestData.labels.nonEmpty)
+      allLabels = labelsFor(data.update, edits, filesWithOldVersion, artifactIdToVersionScheme)
+      labels = filterLabels(allLabels, data.repoData.config.pullRequests.includeMatchedLabels)
+    } yield NewPullRequestData.from(
+      data = data,
+      branchName = config.tpe.pullRequestHeadFor(data.fork, data.updateBranch),
+      edits = edits,
+      artifactIdToUrl = artifactIdToUrl,
+      artifactIdToUpdateInfoUrls = artifactIdToUpdateInfoUrls.toMap,
+      filesWithOldVersion = filesWithOldVersion,
+      addLabels = config.addLabels,
+      labels = data.repoData.config.pullRequests.customLabels ++ labels
+    )
+
+  private def createPullRequest(data: UpdateData, edits: List[EditAttempt]): F[ProcessResult] =
+    for {
+      _ <- logger.info(s"Create PR ${data.updateBranch.name}")
+      requestData <- preparePullRequest(data, edits)
+      pr <- forgeApiAlg.createPullRequest(data.repo, requestData)
       prData = PullRequestData[Id](
         pr.html_url,
         data.baseSha1,
@@ -250,14 +260,14 @@ final class NurtureAlg[F[_]](config: VCSCfg)(implicit
       _ <- logger.info(s"Created PR ${pr.html_url}")
     } yield Created(pr.number)
 
-  private def updatePullRequest(data: UpdateData): F[ProcessResult] =
+  private def updatePullRequest(data: UpdateData, number: PullRequestNumber): F[ProcessResult] =
     if (data.repoConfig.updatePullRequestsOrDefault =!= PullRequestUpdateStrategy.Never)
       gitAlg.returnToCurrentBranch(data.repo) {
-        for {
-          _ <- gitAlg.checkoutBranch(data.repo, data.updateBranch)
-          update <- shouldBeUpdated(data)
-          result <- if (update) mergeAndApplyAgain(data) else F.pure[ProcessResult](Ignored)
-        } yield result
+        gitAlg.checkoutBranch(data.repo, data.updateBranch) >>
+          shouldBeUpdated(data).ifM(
+            ifTrue = resetAndApplyAgain(number, data),
+            ifFalse = (Ignored: ProcessResult).pure
+          )
       }
     else
       logger.info("PR updates are disabled by flag").as(Ignored)
@@ -281,20 +291,19 @@ final class NurtureAlg[F[_]](config: VCSCfg)(implicit
     result.flatMap { case (update, msg) => logger.info(msg).as(update) }
   }
 
-  private def mergeAndApplyAgain(data: UpdateData): F[ProcessResult] =
+  private def resetAndApplyAgain(number: PullRequestNumber, data: UpdateData): F[ProcessResult] =
     for {
       _ <- logger.info(
-        s"Merge branch ${data.baseBranch.name} into ${data.updateBranch.name} and apply again"
+        s"Reset ${data.updateBranch.name} to ${data.baseBranch.name} and apply again"
       )
-      maybeRevertCommit <- gitAlg.revertChanges(data.repo, data.baseBranch)
-      maybeMergeCommit <- gitAlg.mergeTheirs(data.repo, data.baseBranch)
+      _ <- gitAlg.resetHard(data.repo, data.baseBranch)
       edits <- data.update.on(
         update = editAlg.applyUpdate(data.repoData, _),
         grouped = _.updates.flatTraverse(editAlg.applyUpdate(data.repoData, _))
       )
       editCommits = edits.flatMap(_.commits)
-      commits = maybeRevertCommit.toList ++ maybeMergeCommit.toList ++ editCommits
-      result <- pushCommits(data, commits)
+      result <- pushCommits(data, editCommits)
+      requestData <- preparePullRequest(data, edits)
+      _ <- forgeApiAlg.updatePullRequest(number: PullRequestNumber, data.repo, requestData)
     } yield result
-
 }

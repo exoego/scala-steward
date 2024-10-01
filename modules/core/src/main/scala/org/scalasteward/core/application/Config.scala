@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,36 +17,29 @@
 package org.scalasteward.core.application
 
 import better.files.File
-import cats.Monad
-import cats.syntax.all._
 import org.http4s.Uri
-import org.http4s.Uri.UserInfo
 import org.scalasteward.core.application.Cli.EnvVar
 import org.scalasteward.core.application.Config._
 import org.scalasteward.core.data.Resolver
+import org.scalasteward.core.forge.ForgeType
+import org.scalasteward.core.forge.github.GitHubApp
 import org.scalasteward.core.git.Author
-import org.scalasteward.core.io.{ProcessAlg, WorkspaceAlg}
-import org.scalasteward.core.util
 import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.VCSType
-import org.scalasteward.core.vcs.data.AuthenticatedUser
-import org.scalasteward.core.vcs.github.GitHubApp
 import scala.concurrent.duration.FiniteDuration
 
 /** Configuration for scala-steward.
   *
-  * == vcsCfg.apiHost ==
+  * ==forgeCfg.apiHost==
   * REST API v3 endpoints prefix
   *
-  * For github.com this is "https://api.github.com", see
-  * [[https://developer.github.com/v3/]].
+  * For github.com this is "https://api.github.com", see [[https://developer.github.com/v3/]].
   *
   * For GitHub Enterprise this is "http(s)://[hostname]/api/v3", see
   * [[https://developer.github.com/enterprise/v3/]].
   *
-  * == gitCfg.gitAskPass ==
-  * Program that is invoked by scala-steward and git (via the `GIT_ASKPASS`
-  * environment variable) to request the password for the user vcsCfg.vcsLogin.
+  * ==gitCfg.gitAskPass==
+  * Program that is invoked by scala-steward and git (via the `GIT_ASKPASS` environment variable) to
+  * request the password for the user forgeCfg.forgeLogin.
   *
   * This program could just be a simple shell script that echos the password.
   *
@@ -54,9 +47,9 @@ import scala.concurrent.duration.FiniteDuration
   */
 final case class Config(
     workspace: File,
-    reposFile: File,
+    reposFiles: Nel[Uri],
     gitCfg: GitCfg,
-    vcsCfg: VCSCfg,
+    forgeCfg: ForgeCfg,
     ignoreOptsFiles: Boolean,
     processCfg: ProcessCfg,
     repoConfigCfg: RepoConfigCfg,
@@ -66,25 +59,22 @@ final case class Config(
     bitbucketCfg: BitbucketCfg,
     bitbucketServerCfg: BitbucketServerCfg,
     gitLabCfg: GitLabCfg,
-    azureReposConfig: AzureReposConfig,
+    azureReposCfg: AzureReposCfg,
     githubApp: Option[GitHubApp],
     urlCheckerTestUrls: Nel[Uri],
     defaultResolver: Resolver,
-    refreshBackoffPeriod: FiniteDuration
+    refreshBackoffPeriod: FiniteDuration,
+    exitCodePolicy: ExitCodePolicy
 ) {
-  def vcsUser[F[_]](implicit
-      processAlg: ProcessAlg[F],
-      workspaceAlg: WorkspaceAlg[F],
-      F: Monad[F]
-  ): F[AuthenticatedUser] =
-    for {
-      rootDir <- workspaceAlg.rootDir
-      urlWithUser = util.uri.withUserInfo
-        .replace(UserInfo(vcsCfg.login, None))(vcsCfg.apiHost)
-        .renderString
-      prompt = s"Password for '$urlWithUser': "
-      password <- processAlg.exec(Nel.of(gitCfg.gitAskPass.pathAsString, prompt), rootDir)
-    } yield AuthenticatedUser(vcsCfg.login, password.mkString.trim)
+  def forgeSpecificCfg: ForgeSpecificCfg =
+    forgeCfg.tpe match {
+      case ForgeType.AzureRepos      => azureReposCfg
+      case ForgeType.Bitbucket       => bitbucketCfg
+      case ForgeType.BitbucketServer => bitbucketServerCfg
+      case ForgeType.GitHub          => GitHubCfg()
+      case ForgeType.GitLab          => gitLabCfg
+      case ForgeType.Gitea           => GiteaCfg()
+    }
 }
 
 object Config {
@@ -94,8 +84,8 @@ object Config {
       signCommits: Boolean
   )
 
-  final case class VCSCfg(
-      tpe: VCSType,
+  final case class ForgeCfg(
+      tpe: ForgeType,
       apiHost: Uri,
       login: String,
       doNotFork: Boolean,
@@ -130,26 +120,29 @@ object Config {
       disableDefaults: Boolean
   )
 
-  final case class BitbucketServerCfg(
-      useDefaultReviewers: Boolean
-  )
+  sealed trait ForgeSpecificCfg extends Product with Serializable
+
+  final case class AzureReposCfg(
+      organization: Option[String]
+  ) extends ForgeSpecificCfg
 
   final case class BitbucketCfg(
       useDefaultReviewers: Boolean
-  )
+  ) extends ForgeSpecificCfg
+
+  final case class BitbucketServerCfg(
+      useDefaultReviewers: Boolean
+  ) extends ForgeSpecificCfg
+
+  final case class GitHubCfg(
+  ) extends ForgeSpecificCfg
 
   final case class GitLabCfg(
       mergeWhenPipelineSucceeds: Boolean,
-      requiredReviewers: Option[Int]
-  )
+      requiredReviewers: Option[Int],
+      removeSourceBranch: Boolean
+  ) extends ForgeSpecificCfg
 
-  final case class AzureReposConfig(
-      organization: Option[String]
-  )
-
-  sealed trait StewardUsage
-  object StewardUsage {
-    final case class Regular(config: Config) extends StewardUsage
-    final case class ValidateRepoConfig(file: File) extends StewardUsage
-  }
+  final case class GiteaCfg(
+  ) extends ForgeSpecificCfg
 }

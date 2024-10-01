@@ -10,8 +10,8 @@ sbt stage
   --repos-file "$STEWARD_DIR/repos.md" \
   --repo-config "$STEWARD_DIR/default.scala-steward.conf" \
   --git-author-email ${EMAIL} \
-  --vcs-api-host "https://api.github.com" \
-  --vcs-login ${LOGIN} \
+  --forge-api-host "https://api.github.com" \
+  --forge-login ${LOGIN} \
   --git-ask-pass "$STEWARD_DIR/.github/askpass/$LOGIN.sh" \
   --sign-commits \
   --env-var FOO=BAR
@@ -27,8 +27,8 @@ docker run -v $STEWARD_DIR:/opt/scala-steward -it fthomas/scala-steward:latest \
   --repos-file "/opt/scala-steward/repos.md" \
   --repo-config "/opt/scala-steward/default.scala-steward.conf" \
   --git-author-email ${EMAIL} \
-  --vcs-api-host "https://api.github.com" \
-  --vcs-login ${LOGIN} \
+  --forge-api-host "https://api.github.com" \
+  --forge-login ${LOGIN} \
   --git-ask-pass "/opt/scala-steward/.github/askpass/$LOGIN.sh" \
   --sign-commits \
   --env-var FOO=BAR \ 
@@ -51,7 +51,16 @@ More information about using the `--scalafix-migrations` and `--artifact-migrati
 The workspace directory (specified with `--workspace`) provides a location for cache and temporary files.  
 
 It is important to persist this workspace between runs.  Without this, Scala Steward will be unable to observe 
-repo-specific preferences (such as [pullRequests.frequency](repo-specific-configuration.md)) correctly.   
+repo-specific preferences (such as [pullRequests.frequency](repo-specific-configuration.md)) correctly.
+
+Furthermore, `git` requires the workspace directory to be owned by the same user that will run Scala Steward.
+If there is an ownership mismatch, `git` may print error messages like
+
+> fatal: detected dubious ownership in repository …
+
+or
+
+> fatal: not in a git directory
 
 ### Private repositories
 
@@ -83,6 +92,18 @@ example1.host=artifacts.example.com
 example1.realm=Example Realm
 ```
 
+#### Running behind a proxy
+
+You can configure a proxy using the JAVA_OPTS environment variable with proxy properties.
+
+For example:
+
+```bash
+JAVA_OPTS="-Dhttp.proxyHost=webcache.example.com -Dhttp.proxyPort=8080 -Dhttps.proxyHost=webcache.example.com -Dhttps.proxyPort=8080"
+```
+
+See Oracle proxies documentation for more info.
+
 ### Running locally from sbt
 
 #### Sample run for GitLab
@@ -90,7 +111,7 @@ example1.realm=Example Realm
 ```
 sbt
 project core
-run --do-not-fork --workspace "/path/workspace" --repos-file "/path/repos.md" --repo-config "/path/default.scala-steward.conf" --git-ask-pass "/path/pass.sh" --git-author-email "email@example.org" --vcs-type "gitlab" --vcs-api-host "https://gitlab.com/api/v4/" --vcs-login "gitlab.steward"
+run --do-not-fork --workspace "/path/workspace" --repos-file "/path/repos.md" --repo-config "/path/default.scala-steward.conf" --git-ask-pass "/path/pass.sh" --git-author-email "email@example.org" --forge-type "gitlab" --forge-api-host "https://gitlab.com/api/v4/" --forge-login "gitlab.steward"
 ```
 
 
@@ -115,9 +136,9 @@ docker run -v $PWD:/opt/scala-steward \
     --repo-config "/opt/scala-steward/default.scala-steward.conf" \
     --git-ask-pass "/opt/scala-steward/pass.sh" \
     --git-author-email "myemail@company.xyz" \
-    --vcs-type "bitbucket" \
-    --vcs-api-host "https://api.bitbucket.org/2.0" \
-    --vcs-login "$BITBUCKET_USERNAME"
+    --forge-type "bitbucket" \
+    --forge-api-host "https://api.bitbucket.org/2.0" \
+    --forge-login "$BITBUCKET_USERNAME"
 ```
 
 * Run it from a CI tool or manually using with this command:
@@ -144,9 +165,9 @@ docker run -v $PWD:/opt/scala-steward \
     --repo-config "/opt/scala-steward/default.scala-steward.conf" \
     --git-ask-pass "/opt/scala-steward/pass.sh" \
     --git-author-email "myemail@company.xyz" \
-    --vcs-type "bitbucket" \
-    --vcs-api-host "https://api.bitbucket.org/2.0" \
-    --vcs-login "$BITBUCKET_USERNAME"
+    --forge-type "bitbucket" \
+    --forge-api-host "https://api.bitbucket.org/2.0" \
+    --forge-login "$BITBUCKET_USERNAME"
 ```
 
 NOTE: This script is slightly different to the one in the previous Bitbucket
@@ -191,7 +212,6 @@ pipelines:
 There is multiple articles on how to run Scala Steward on-premise:
 
 * [Running Scala Steward On-premise](https://engineering.avast.io/running-scala-steward-on-premise)
-* [Running scala-steward periodically on AWS Fargate](https://medium.com/@tanishiking/running-scala-steward-periodically-on-aws-fargate-3d3d202f0f7)
 * [Scala StewardとGitHub Actionsで依存ライブラリの更新を自動化する](https://scalapedia.com/articles/145/Scala+Steward%E3%81%A8GitHub+Actions%E3%81%A7%E4%BE%9D%E5%AD%98%E3%83%A9%E3%82%A4%E3%83%96%E3%83%A9%E3%83%AA%E3%81%AE%E6%9B%B4%E6%96%B0%E3%82%92%E8%87%AA%E5%8B%95%E5%8C%96%E3%81%99%E3%82%8B)
 * [Centralized Scala Steward with GitHub Actions](https://hector.dev/2020/11/18/centralized-scala-steward-with-github-actions)
 * [Big Timesavers for Busy Scala Developers](https://speakerdeck.com/exoego/big-timesavers-for-busy-scala-developers)
@@ -230,17 +250,18 @@ check:
     - mkdir --parents "$CI_PROJECT_DIR/.sbt" "$CI_PROJECT_DIR/.ivy2"
     - ln -sfT "$CI_PROJECT_DIR/.sbt"  "$HOME/.sbt"
     - ln -sfT "$CI_PROJECT_DIR/.ivy2" "$HOME/.ivy2"
-    - >-
-      /opt/docker/bin/scala-steward
-        --workspace  "$CI_PROJECT_DIR/workspace"
-        --process-timeout 30min
-        --do-not-fork
-        --repos-file "$CI_PROJECT_DIR/repos.md"
-        --repo-config "$CI_PROJECT_DIR/default.scala-steward.conf"
-        --git-author-email "${EMAIL}"
-        --vcs-type "gitlab"
-        --vcs-api-host "${CI_API_V4_URL}"
-        --vcs-login "${LOGIN}"
+    - chmod +x "$CI_PROJECT_DIR/askpass.sh"
+    - >
+      /opt/docker/bin/scala-steward \
+        --workspace "$CI_PROJECT_DIR/workspace" \
+        --process-timeout "30min" \
+        --do-not-fork \
+        --repos-file "$CI_PROJECT_DIR/repos.md" \
+        --repo-config "$CI_PROJECT_DIR/default.scala-steward.conf" \
+        --git-author-email "${EMAIL}" \
+        --forge-type "gitlab" \
+        --forge-api-host "${CI_API_V4_URL}" \
+        --forge-login "${LOGIN}" \
         --git-ask-pass "$CI_PROJECT_DIR/askpass.sh"
   cache:
     key: scala-steward
@@ -306,9 +327,9 @@ docker run -v $PWD:/opt/scala-steward \
     --workspace "/opt/scala-steward/workspace" \
     --repos-file "/opt/scala-steward/repos.md" \
     --git-author-email "email@mycompany.com" \
-    --vcs-type "azure-repos" \
-    --vcs-api-host "https://dev.azure.com" \
-    --vcs-login "email@mycompany.com" \
+    --forge-type "azure-repos" \
+    --forge-api-host "https://dev.azure.com" \
+    --forge-login "email@mycompany.com" \
     --azure-repos-organization "mycompany" \
     --git-ask-pass "/opt/scala-steward/pass.sh"
 ```

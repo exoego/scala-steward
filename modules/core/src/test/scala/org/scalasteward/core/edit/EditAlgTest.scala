@@ -1,6 +1,5 @@
 package org.scalasteward.core.edit
 
-import better.files.File
 import cats.effect.unsafe.implicits.global
 import munit.FunSuite
 import org.scalasteward.core.TestInstances.dummyRepoCache
@@ -8,51 +7,47 @@ import org.scalasteward.core.TestSyntax._
 import org.scalasteward.core.buildtool.sbt.{sbtArtifactId, sbtGroupId}
 import org.scalasteward.core.data._
 import org.scalasteward.core.edit.scalafix.ScalafixCli.scalafixBinary
-import org.scalasteward.core.mock.MockConfig.{config, gitCmd}
-import org.scalasteward.core.mock.MockContext.context.editAlg
+import org.scalasteward.core.mock.MockContext.context._
 import org.scalasteward.core.mock.MockState
 import org.scalasteward.core.mock.MockState.TraceEntry.{Cmd, Log}
 import org.scalasteward.core.repoconfig.RepoConfig
 import org.scalasteward.core.scalafmt.ScalafmtAlg.opts
 import org.scalasteward.core.scalafmt.{scalafmtBinary, scalafmtConfName, scalafmtDependency}
-import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.data.Repo
 
 class EditAlgTest extends FunSuite {
-  private def gitStatus(repoDir: File): List[String] =
-    gitCmd(repoDir) ++ List("status", "--porcelain", "--untracked-files=no", "--ignore-submodules")
-
   test("applyUpdate") {
     val repo = Repo("edit-alg", "test-1")
     val data = RepoData(repo, dummyRepoCache, RepoConfig.empty)
-    val repoDir = config.workspace / repo.toPath
+    val repoDir = workspaceAlg.repoDir(repo).unsafeRunSync()
     val update = ("org.typelevel".g % "cats-core".a % "1.2.0" %> "1.3.0").single
-    val file1 = repoDir / "build.sbt"
-    val file2 = repoDir / "project/Dependencies.scala"
+    val buildSbt = repoDir / "build.sbt"
+    val scalaFile = repoDir / "project/Dependencies.scala"
+    val gitignore = repoDir / ".gitignore"
 
     val state = MockState.empty
-      .addFiles(file1 -> """val catsVersion = "1.2.0"""", file2 -> "")
+      .copy(execCommands = true)
+      .initGitRepo(
+        repoDir,
+        buildSbt -> """val catsVersion = "1.2.0"""",
+        scalaFile -> "",
+        gitignore -> ""
+      )
       .flatMap(editAlg.applyUpdate(data, update).runS)
       .unsafeRunSync()
 
     val expected = MockState.empty.copy(
+      execCommands = true,
       trace = Vector(
-        Cmd("test", "-f", repoDir.pathAsString),
-        Cmd("test", "-f", file1.pathAsString),
-        Cmd("read", file1.pathAsString),
-        Cmd("test", "-f", (repoDir / "project").pathAsString),
-        Cmd("test", "-f", file2.pathAsString),
-        Cmd("read", file2.pathAsString),
-        Log("Trying heuristic 'moduleId'"),
-        Cmd("read", file1.pathAsString),
-        Log("Trying heuristic 'strict'"),
-        Cmd("read", file1.pathAsString),
-        Log("Trying heuristic 'original'"),
-        Cmd("read", file1.pathAsString),
-        Cmd("write", file1.pathAsString),
-        Cmd(gitStatus(repoDir))
+        Cmd.gitGrep(repoDir, update.currentVersion.value),
+        Cmd("read", buildSbt.pathAsString),
+        Cmd.gitGrep(repoDir, update.groupId.value),
+        Cmd("read", buildSbt.pathAsString),
+        Cmd("write", buildSbt.pathAsString),
+        Cmd.gitStatus(repoDir),
+        Cmd.gitCommit(repoDir, "Update cats-core to 1.3.0"),
+        Cmd.gitLatestSha1(repoDir)
       ),
-      files = Map(file1 -> """val catsVersion = "1.3.0"""", file2 -> "")
+      files = Map(buildSbt -> """val catsVersion = "1.3.0"""", scalaFile -> "", gitignore -> "")
     )
 
     assertEquals(state, expected)
@@ -64,54 +59,43 @@ class EditAlgTest extends FunSuite {
       List(List(DependencyInfo(scalafmtDependency(Version("2.0.0")), Nil)).withMavenCentral)
     )
     val data = RepoData(repo, cache, RepoConfig.empty)
-    val repoDir = config.workspace / repo.toPath
+    val repoDir = workspaceAlg.repoDir(repo).unsafeRunSync()
     val update = ("org.scalameta".g % "scalafmt-core".a % "2.0.0" %> "2.1.0").single
+    val gitignore = (repoDir / ".gitignore") -> "target/"
     val scalafmtConf = repoDir / scalafmtConfName
     val scalafmtConfContent = """maxColumn = 100
                                 |version = 2.0.0
                                 |align.openParenCallSite = false
                                 |""".stripMargin
-    val buildSbt = repoDir / "build.sbt"
+    val buildSbt = (repoDir / "build.sbt") -> "\n"
+    val target = repoDir / "target"
+    // this file should not be read because it's under target which is git ignored
+    val targetScalaFile = target / "SomeFile.scala"
 
     val state = MockState.empty
-      .addFiles(scalafmtConf -> scalafmtConfContent, buildSbt -> "")
+      .copy(execCommands = true)
+      .initGitRepo(repoDir, scalafmtConf -> scalafmtConfContent, buildSbt, gitignore)
+      .flatMap(_.addFiles(targetScalaFile -> s""" object Test {"2.0.0"} """))
       .flatMap(editAlg.applyUpdate(data, update).runS)
       .unsafeRunSync()
 
     val expected = MockState.empty.copy(
+      execCommands = true,
       trace = Vector(
-        Cmd("test", "-f", repoDir.pathAsString),
-        Cmd("test", "-f", scalafmtConf.pathAsString),
+        Cmd.gitGrep(repoDir, update.currentVersion.value),
         Cmd("read", scalafmtConf.pathAsString),
-        Cmd("test", "-f", buildSbt.pathAsString),
-        Log("Trying heuristic 'moduleId'"),
-        Cmd("read", scalafmtConf.pathAsString),
-        Log("Trying heuristic 'strict'"),
-        Cmd("read", scalafmtConf.pathAsString),
-        Log("Trying heuristic 'original'"),
-        Cmd("read", scalafmtConf.pathAsString),
-        Log("Trying heuristic 'relaxed'"),
-        Cmd("read", scalafmtConf.pathAsString),
-        Log("Trying heuristic 'sliding'"),
-        Cmd("read", scalafmtConf.pathAsString),
-        Log("Trying heuristic 'completeGroupId'"),
-        Cmd("read", scalafmtConf.pathAsString),
-        Log("Trying heuristic 'groupId'"),
-        Cmd("read", scalafmtConf.pathAsString),
-        Log("Trying heuristic 'specific'"),
+        Cmd.gitGrep(repoDir, update.groupId.value),
         Cmd("read", scalafmtConf.pathAsString),
         Cmd("write", scalafmtConf.pathAsString),
-        Cmd(
-          "VAR1=val1" :: "VAR2=val2" :: repoDir.toString :: scalafmtBinary :: opts.nonInteractive :: opts.modeChanged
-        ),
-        Cmd(gitStatus(repoDir)),
+        Cmd.exec(repoDir, scalafmtBinary :: opts.nonInteractive :: opts.modeChanged: _*),
+        Cmd.gitStatus(repoDir),
+        Cmd.gitCommit(repoDir, "Update scalafmt-core to 2.1.0"),
+        Cmd.gitLatestSha1(repoDir),
         Log(
           "Executing post-update hook for org.scalameta:scalafmt-core with command 'scalafmt --non-interactive'"
         ),
-        Cmd(
-          "VAR1=val1" :: "VAR2=val2" :: repoDir.toString :: scalafmtBinary :: opts.nonInteractive :: Nil
-        ),
-        Cmd(gitStatus(repoDir))
+        Cmd.exec(repoDir, scalafmtBinary, opts.nonInteractive),
+        Cmd.gitStatus(repoDir)
       ),
       files = Map(
         scalafmtConf ->
@@ -119,46 +103,9 @@ class EditAlgTest extends FunSuite {
             |version = 2.1.0
             |align.openParenCallSite = false
             |""".stripMargin,
-        buildSbt -> ""
-      )
-    )
-
-    assertEquals(state, expected)
-  }
-
-  test("apply update to ammonite file") {
-    val repo = Repo("edit-alg", "test-3")
-    val data = RepoData(repo, dummyRepoCache, RepoConfig.empty)
-    val repoDir = config.workspace / repo.toPath
-    val update = ("org.typelevel".g % "cats-core".a % "1.2.0" %> "1.3.0").single
-    val file1 = repoDir / "script.sc"
-    val file2 = repoDir / "build.sbt"
-
-    val state = MockState.empty
-      .addFiles(
-        file1 -> """import $ivy.`org.typelevel::cats-core:1.2.0`, cats.implicits._"""",
-        file2 -> """"org.typelevel" %% "cats-core" % "1.2.0""""
-      )
-      .flatMap(editAlg.applyUpdate(data, update).runS)
-      .unsafeRunSync()
-
-    val expected = MockState.empty.copy(
-      trace = Vector(
-        Cmd("test", "-f", repoDir.pathAsString),
-        Cmd("test", "-f", file2.pathAsString),
-        Cmd("read", file2.pathAsString),
-        Cmd("test", "-f", file1.pathAsString),
-        Cmd("read", file1.pathAsString),
-        Log("Trying heuristic 'moduleId'"),
-        Cmd("read", file2.pathAsString),
-        Cmd("write", file2.pathAsString),
-        Cmd("read", file1.pathAsString),
-        Cmd("write", file1.pathAsString),
-        Cmd(gitStatus(repoDir))
-      ),
-      files = Map(
-        file1 -> """import $ivy.`org.typelevel::cats-core:1.3.0`, cats.implicits._"""",
-        file2 -> """"org.typelevel" %% "cats-core" % "1.3.0""""
+        buildSbt,
+        gitignore,
+        targetScalaFile -> s"""object Test { "2.0.0" }\n"""
       )
     )
 
@@ -166,13 +113,15 @@ class EditAlgTest extends FunSuite {
   }
 
   test("applyUpdate with build Scalafix") {
-    val repo = Repo("edit-alg", "test-3-1")
+    val repo = Repo("edit-alg", "test-3")
     val data = RepoData(repo, dummyRepoCache, RepoConfig.empty)
-    val repoDir = config.workspace / repo.toPath
+    val repoDir = workspaceAlg.repoDir(repo).unsafeRunSync()
     val update = (sbtGroupId % sbtArtifactId % "1.4.9" %> "1.5.5").single
 
     val state = MockState.empty
-      .addFiles(
+      .copy(execCommands = true)
+      .initGitRepo(
+        repoDir,
         repoDir / "build.sbt" -> "",
         repoDir / "project" / "build.properties" -> """sbt.version=1.4.9"""
       )
@@ -186,119 +135,154 @@ class EditAlgTest extends FunSuite {
     })
   }
 
-  test("https://github.com/circe/circe-config/pull/40") {
-    val update = ("com.typesafe".g % "config".a % "1.3.3" %> "1.3.4").single
-    val original = Map(
-      "build.sbt" -> """val config = "1.3.3"""",
-      "project/plugins.sbt" -> """addSbtPlugin("com.typesafe.sbt" % "sbt-site" % "1.3.3")"""
-    )
-    val expected = Map(
-      "build.sbt" -> """val config = "1.3.4"""",
-      "project/plugins.sbt" -> """addSbtPlugin("com.typesafe.sbt" % "sbt-site" % "1.3.3")"""
-    )
-    assertEquals(runApplyUpdate(Repo("edit-alg", "test-4"), update, original), expected)
-  }
-
-  test("file restriction when sbt update") {
-    val update = ("org.scala-sbt".g % "sbt".a % "1.1.2" %> "1.2.8").single
-    val original = Map(
-      "build.properties" -> """sbt.version=1.1.2""",
-      "project/plugins.sbt" -> """addSbtPlugin("com.jsuereth" % "sbt-pgp" % "1.1.2")"""
-    )
-    val expected = Map(
-      "build.properties" -> """sbt.version=1.2.8""",
-      "project/plugins.sbt" -> """addSbtPlugin("com.jsuereth" % "sbt-pgp" % "1.1.2")"""
-    )
-    assertEquals(runApplyUpdate(Repo("edit-alg", "test-5"), update, original), expected)
-  }
-
-  test("keyword with extra underscore") {
-    val update =
-      ("org.scala-js".g % Nel.of("sbt-scalajs".a, "scalajs-compiler".a) % "1.1.0" %> "1.1.1").group
-    val original = Map(
-      ".travis.yml" -> """ - SCALA_JS_VERSION=1.1.0""",
-      "project/plugins.sbt" -> """val scalaJsVersion = Option(System.getenv("SCALA_JS_VERSION")).getOrElse("1.1.0")"""
-    )
-    val expected = Map(
-      ".travis.yml" -> """ - SCALA_JS_VERSION=1.1.1""",
-      "project/plugins.sbt" -> """val scalaJsVersion = Option(System.getenv("SCALA_JS_VERSION")).getOrElse("1.1.1")"""
-    )
-    assertEquals(runApplyUpdate(Repo("edit-alg", "test-6"), update, original), expected)
-  }
-
-  test("test updating group id and version") {
-    val update = ("com.github.mpilquist".g % "simulacrum".a % "0.19.0" %> "1.0.0").single
-      .copy(newerGroupId = Some("org.typelevel".g), newerArtifactId = Some("simulacrum"))
-    val original = Map(
-      "build.sbt" -> """val simulacrum = "0.19.0"
-                       |"com.github.mpilquist" %% "simulacrum" % simulacrum
-                       |"""".stripMargin
-    )
-    val expected = Map(
-      "build.sbt" -> """val simulacrum = "1.0.0"
-                       |"org.typelevel" %% "simulacrum" % simulacrum
-                       |"""".stripMargin
-    )
-    assertEquals(runApplyUpdate(Repo("edit-alg", "test-7"), update, original), expected)
-  }
-
-  test("test updating artifact id and version") {
-    val update = ("com.test".g % "artifact".a % "1.0.0" %> "2.0.0").single
-      .copy(newerGroupId = Some("com.test".g), newerArtifactId = Some("newer-artifact"))
-    val original = Map(
-      "Dependencies.scala" -> """val testVersion = "1.0.0"
-                                |val test = "com.test" %% "artifact" % testVersion
-                                |"""".stripMargin
-    )
-    val expected = Map(
-      "Dependencies.scala" -> """val testVersion = "2.0.0"
-                                |val test = "com.test" %% "newer-artifact" % testVersion
-                                |"""".stripMargin
-    )
-    assertEquals(runApplyUpdate(Repo("edit-alg", "test-8"), update, original), expected)
-  }
-
-  test("NOK artifact change: version and groupId/artifactId in different files") {
-    val update = ("io.chrisdavenport".g % "log4cats".a % "1.1.1" %> "1.2.0").single
-      .copy(newerGroupId = Some("org.typelevel".g))
-    val original = Map(
-      "Dependencies.scala" -> """val log4catsVersion = "1.1.1" """,
-      "build.sbt" -> """ "io.chrisdavenport" %% "log4cats" % log4catsVersion """
-    )
-    val expected = Map(
-      "Dependencies.scala" -> """val log4catsVersion = "1.2.0" """,
-      // The groupId should have been changed here.
-      "build.sbt" -> """ "io.chrisdavenport" %% "log4cats" % log4catsVersion """
-    )
-    assertEquals(runApplyUpdate(Repo("edit-alg", "test-9"), update, original), expected)
-  }
-
-  test("mill version file update") {
-    val update = ("com.lihaoyi".g % "mill-main".a % "0.9.5" %> "0.9.9").single
-    val original = Map(
-      ".mill-version" -> "0.9.5 \n ",
-      ".travis.yml" -> """- TEST_MILL_VERSION=0.9.5"""
-    )
-    val expected = Map(
-      ".mill-version" -> """0.9.9""",
-      ".travis.yml" -> """- TEST_MILL_VERSION=0.9.5"""
-    )
-    assertEquals(runApplyUpdate(Repo("edit-alg", "test-10"), update, original), expected)
-  }
-
-  private def runApplyUpdate(
-      repo: Repo,
-      update: Update.Single,
-      files: Map[String, String]
-  ): Map[String, String] = {
+  test("applyUpdate for scala-cli using lib") {
+    val repo = Repo("edit-alg", "test-4")
     val data = RepoData(repo, dummyRepoCache, RepoConfig.empty)
-    val repoDir = config.workspace / repo.toPath
-    val filesInRepoDir = files.map { case (file, content) => repoDir / file -> content }
-    MockState.empty
-      .addFiles(filesInRepoDir.toSeq: _*)
+    val repoDir = workspaceAlg.repoDir(repo).unsafeRunSync()
+    val mainSc = repoDir / "main.sc"
+    val update = ("org.typelevel".g % "cats-effect".a % "3.5.2" %> "3.5.4").single
+
+    val state = MockState.empty
+      .copy(execCommands = true)
+      .initGitRepo(
+        repoDir,
+        mainSc ->
+          """
+            |//> using scala "3.4.2"
+            |//> using jvm "temurin:21"
+            |//> using lib "org.typelevel::cats-effect:3.5.2"
+            |println("Hello!")
+            |""".stripMargin
+      )
       .flatMap(editAlg.applyUpdate(data, update).runS)
-      .map(_.files)
       .unsafeRunSync()
-      .map { case (file, content) => file.toString.replace(repoDir.toString + "/", "") -> content }
+
+    val expected = MockState.empty.copy(
+      execCommands = true,
+      trace = Vector(
+        Cmd.gitGrep(repoDir, update.currentVersion.value),
+        Cmd("read", mainSc.pathAsString),
+        Cmd.gitGrep(repoDir, update.groupId.value),
+        Cmd("read", mainSc.pathAsString),
+        Cmd("read", mainSc.pathAsString),
+        Cmd("write", mainSc.pathAsString),
+        Cmd.gitStatus(repoDir),
+        Cmd.gitCommit(repoDir, "Update cats-effect to 3.5.4"),
+        Cmd.gitLatestSha1(repoDir)
+      ),
+      files = Map(
+        mainSc ->
+          """
+            |//> using scala "3.4.2"
+            |//> using jvm "temurin:21"
+            |//> using lib "org.typelevel::cats-effect:3.5.4"
+            |println("Hello!")
+            |""".stripMargin
+      )
+    )
+
+    assertEquals(state, expected)
+  }
+
+  test("applyUpdate for scala-cli using dep") {
+    val repo = Repo("edit-alg", "test-5")
+    val data = RepoData(repo, dummyRepoCache, RepoConfig.empty)
+    val repoDir = workspaceAlg.repoDir(repo).unsafeRunSync()
+    val mainSc = repoDir / "main.sc"
+    val update = ("org.typelevel".g % "cats-effect".a % "3.5.2" %> "3.5.4").single
+
+    val state = MockState.empty
+      .copy(execCommands = true)
+      .initGitRepo(
+        repoDir,
+        mainSc ->
+          """
+            |//> using scala "3.4.2"
+            |//> using jvm "temurin:21"
+            |//> using dep "org.typelevel::cats-effect:3.5.2"
+            |//> using test.dep "org.scalameta::munit:1.0.0"
+            |println("Hello!")
+            |""".stripMargin
+      )
+      .flatMap(editAlg.applyUpdate(data, update).runS)
+      .unsafeRunSync()
+
+    val expected = MockState.empty.copy(
+      execCommands = true,
+      trace = Vector(
+        Cmd.gitGrep(repoDir, update.currentVersion.value),
+        Cmd("read", mainSc.pathAsString),
+        Cmd.gitGrep(repoDir, update.groupId.value),
+        Cmd("read", mainSc.pathAsString),
+        Cmd("read", mainSc.pathAsString),
+        Cmd("write", mainSc.pathAsString),
+        Cmd.gitStatus(repoDir),
+        Cmd.gitCommit(repoDir, "Update cats-effect to 3.5.4"),
+        Cmd.gitLatestSha1(repoDir)
+      ),
+      files = Map(
+        mainSc ->
+          """
+            |//> using scala "3.4.2"
+            |//> using jvm "temurin:21"
+            |//> using dep "org.typelevel::cats-effect:3.5.4"
+            |//> using test.dep "org.scalameta::munit:1.0.0"
+            |println("Hello!")
+            |""".stripMargin
+      )
+    )
+
+    assertEquals(state, expected)
+  }
+
+  test("applyUpdate for scala-cli using test.dep") {
+    val repo = Repo("edit-alg", "test-6")
+    val data = RepoData(repo, dummyRepoCache, RepoConfig.empty)
+    val repoDir = workspaceAlg.repoDir(repo).unsafeRunSync()
+    val mainSc = repoDir / "main.sc"
+    val update = ("org.scalameta".g % "munit".a % "0.7.29" %> "1.0.0").single
+
+    val state = MockState.empty
+      .copy(execCommands = true)
+      .initGitRepo(
+        repoDir,
+        mainSc ->
+          """
+            |//> using scala "3.4.2"
+            |//> using jvm "temurin:21"
+            |//> using dep "org.typelevel::cats-effect:3.5.4"
+            |//> using test.dep "org.scalameta::munit:0.7.29"
+            |println("Hello!")
+            |""".stripMargin
+      )
+      .flatMap(editAlg.applyUpdate(data, update).runS)
+      .unsafeRunSync()
+
+    val expected = MockState.empty.copy(
+      execCommands = true,
+      trace = Vector(
+        Cmd.gitGrep(repoDir, update.currentVersion.value),
+        Cmd("read", mainSc.pathAsString),
+        Cmd.gitGrep(repoDir, update.groupId.value),
+        Cmd("read", mainSc.pathAsString),
+        Cmd("read", mainSc.pathAsString),
+        Cmd("write", mainSc.pathAsString),
+        Cmd.gitStatus(repoDir),
+        Cmd.gitCommit(repoDir, "Update munit to 1.0.0"),
+        Cmd.gitLatestSha1(repoDir)
+      ),
+      files = Map(
+        mainSc ->
+          """
+            |//> using scala "3.4.2"
+            |//> using jvm "temurin:21"
+            |//> using dep "org.typelevel::cats-effect:3.5.4"
+            |//> using test.dep "org.scalameta::munit:1.0.0"
+            |println("Hello!")
+            |""".stripMargin
+      )
+    )
+
+    assertEquals(state, expected)
   }
 }

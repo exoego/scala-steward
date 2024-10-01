@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,14 +21,14 @@ import cats.{Id, Monad}
 import io.circe.Codec
 import io.circe.generic.semiauto.deriveCodec
 import org.http4s.Uri
-import org.scalasteward.core.data.{CrossDependency, GroupId, Update, Version}
+import org.scalasteward.core.data._
+import org.scalasteward.core.forge.data.{PullRequestNumber, PullRequestState}
 import org.scalasteward.core.git
 import org.scalasteward.core.git.{Branch, Sha1}
 import org.scalasteward.core.nurture.PullRequestRepository.Entry
 import org.scalasteward.core.persistence.KeyValueStore
 import org.scalasteward.core.update.UpdateAlg
 import org.scalasteward.core.util.{DateTimeAlg, Timestamp}
-import org.scalasteward.core.vcs.data.{PullRequestNumber, PullRequestState, Repo}
 
 final class PullRequestRepository[F[_]](kvStore: KeyValueStore[F, Repo, Map[Uri, Entry]])(implicit
     dateTimeAlg: DateTimeAlg[F],
@@ -112,13 +112,10 @@ final class PullRequestRepository[F[_]](kvStore: KeyValueStore[F, Repo, Map[Uri,
       case None => Map.empty
       case Some(pullRequests) =>
         pullRequests.values
-          .collect { case Entry(_, u: Update.Single, _, entryCreatedAt, _, _) =>
-            (u.groupId, u.mainArtifactId, entryCreatedAt)
+          .flatMap { entry =>
+            entry.update.asSingleUpdates.map(_.groupAndMainArtifactId -> entry.entryCreatedAt)
           }
-          .groupBy { case (groupId, mainArtifactId, _) => (groupId, mainArtifactId) }
-          .view
-          .mapValues(_.map { case (_, _, createdAt) => createdAt }.max)
-          .toMap
+          .groupMapReduce(_._1)(_._2)(_ max _)
     }
 }
 

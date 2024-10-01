@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 package org.scalasteward.core.util
 
 import cats.syntax.all._
-import io.circe.{Decoder, KeyDecoder, KeyEncoder}
+import io.circe.{Decoder, Encoder, KeyDecoder, KeyEncoder}
 import monocle.Optional
 import org.http4s.Uri
 import org.http4s.Uri.{Authority, Scheme, UserInfo}
@@ -26,26 +26,27 @@ object uri {
   implicit val uriDecoder: Decoder[Uri] =
     Decoder[String].emap(s => Uri.fromString(s).leftMap(_.getMessage))
 
+  implicit val uriEncoder: Encoder[Uri] =
+    Encoder[String].contramap[Uri](_.renderString)
+
   implicit val uriKeyDecoder: KeyDecoder[Uri] =
     KeyDecoder.instance(Uri.fromString(_).toOption)
 
   implicit val uriKeyEncoder: KeyEncoder[Uri] =
     KeyEncoder.instance(_.renderString)
 
-  val withAuthority: Optional[Uri, Authority] =
+  private val withAuthority: Optional[Uri, Authority] =
     Optional[Uri, Authority](_.authority)(authority => _.copy(authority = Some(authority)))
 
-  val authorityWithUserInfo: Optional[Authority, UserInfo] =
+  private val authorityWithUserInfo: Optional[Authority, UserInfo] =
     Optional[Authority, UserInfo](_.userInfo)(userInfo => _.copy(userInfo = Some(userInfo)))
 
   val withUserInfo: Optional[Uri, UserInfo] =
     authorityWithUserInfo.compose(withAuthority)
 
-  private val httpSchemes: Set[Scheme] =
-    Set(Scheme.https, Scheme.http)
+  def fromStringWithScheme(s: String): Option[Uri] =
+    Uri.fromString(s).toOption.filter(_.scheme.isDefined)
 
-  def findBrowsableUrl(xs: List[String]): Option[Uri] = {
-    val urls = xs.flatMap(Uri.fromString(_).toList).filter(_.scheme.isDefined)
-    urls.find(_.scheme.exists(httpSchemes)).orElse(urls.headOption)
-  }
+  val httpSchemes: Set[Scheme] =
+    Set(Scheme.https, Scheme.http)
 }

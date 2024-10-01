@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@ package org.scalasteward.core.nurture
 
 import org.http4s.Uri
 import org.scalasteward.core.data.Update
+import org.scalasteward.core.forge.data.{PullRequestNumber, PullRequestState}
 import org.scalasteward.core.git.{Branch, Sha1}
-import org.scalasteward.core.vcs.data.{PullRequestNumber, PullRequestState}
 
 final case class PullRequestData[F[_]](
     url: Uri,

@@ -5,19 +5,14 @@ import org.scalasteward.core.data._
 import org.scalasteward.core.util.Nel
 
 object TestSyntax {
+  val sbtPluginReleases: IvyRepository = {
+    val pattern = "https://repo.scala-sbt.org/scalasbt/sbt-plugin-releases/[defaultPattern]"
+    IvyRepository("sbt-plugin-releases", pattern, None)
+  }
+
   implicit class GenericOps[A](val self: A) extends AnyVal {
     def withMavenCentral: Scope[A] =
       Scope(self, List(Resolver.mavenCentral))
-
-    def withSbtPluginReleases: Scope[A] = {
-      val sbtPluginReleases = IvyRepository(
-        "sbt-plugin-releases",
-        "https://repo.scala-sbt.org/scalasbt/sbt-plugin-releases/[defaultPattern]",
-        None,
-        Nil
-      )
-      Scope(self, List(sbtPluginReleases))
-    }
   }
 
   implicit class StringOps(private val self: String) extends AnyVal {
@@ -107,9 +102,8 @@ object TestSyntax {
     }
 
     def group: Update.ForGroupId = {
-      val crossDependencies =
-        self._2.map(aId => CrossDependency(Dependency(self._1, aId, self._3.v)))
-      Update.ForGroupId(crossDependencies, Nel.of(self._4.v))
+      val forArtifactIds = self._2.map(aId => ((self._1 % aId % self._3) %> self._4).single)
+      Update.ForGroupId(forArtifactIds)
     }
   }
 
@@ -117,9 +111,8 @@ object TestSyntax {
       private val self: (GroupId, Nel[Nel[ArtifactId]], String, String)
   ) extends AnyVal {
     def group: Update.ForGroupId = {
-      val crossDependencies =
-        self._2.map(aIds => CrossDependency(aIds.map(aId => Dependency(self._1, aId, self._3.v))))
-      Update.ForGroupId(crossDependencies, Nel.of(self._4.v))
+      val forArtifactIds = self._2.map(aIds => ((self._1 % aIds % self._3) %> self._4).single)
+      Update.ForGroupId(forArtifactIds)
     }
   }
 }

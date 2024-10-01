@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,60 +21,86 @@ import cats.data.OptionT
 import cats.effect.{Concurrent, Resource}
 import cats.syntax.all._
 import org.scalasteward.core.application.Config
-import org.scalasteward.core.buildtool.BuildToolAlg
 import org.scalasteward.core.buildtool.sbt.command._
-import org.scalasteward.core.buildtool.sbt.data.SbtVersion
+import org.scalasteward.core.buildtool.{BuildRoot, BuildToolAlg}
 import org.scalasteward.core.coursier.VersionsCache
-import org.scalasteward.core.data.{Dependency, Scope}
+import org.scalasteward.core.data.{Dependency, Scope, Version}
 import org.scalasteward.core.edit.scalafix.{ScalafixCli, ScalafixMigration}
+import org.scalasteward.core.io.process.SlurpOptions
 import org.scalasteward.core.io.{FileAlg, FileData, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.data.BuildRoot
 import org.typelevel.log4cats.Logger
 
 final class SbtAlg[F[_]](config: Config)(implicit
     fileAlg: FileAlg[F],
-    logger: Logger[F],
+    override protected val logger: Logger[F],
     processAlg: ProcessAlg[F],
     scalafixCli: ScalafixCli[F],
     workspaceAlg: WorkspaceAlg[F],
     versionsCache: VersionsCache[F],
     F: Concurrent[F]
 ) extends BuildToolAlg[F] {
-  private def getSbtDependency(buildRoot: BuildRoot): F[Option[Dependency]] =
-    OptionT(getSbtVersion(buildRoot)).subflatMap(sbtDependency).value
-
-  private def addGlobalPluginTemporarily(plugin: FileData): Resource[F, Unit] =
-    Resource.eval(sbtDir).flatMap { dir =>
-      List("0.13", "1.0").traverse_ { version =>
-        fileAlg.createTemporarily(dir / version / "plugins" / plugin.name, plugin.content)
-      }
-    }
-
-  def addGlobalPlugins: Resource[F, Unit] =
-    Resource.eval(logger.info("Add global sbt plugins")) >>
-      Resource.eval(stewardPlugin).flatMap(addGlobalPluginTemporarily)
+  override def name: String = "sbt"
 
   override def containsBuild(buildRoot: BuildRoot): F[Boolean] =
     workspaceAlg
       .buildRootDir(buildRoot)
       .flatMap(buildRootDir => fileAlg.isRegularFile(buildRootDir / "build.sbt"))
 
-  private def getSbtVersion(buildRoot: BuildRoot): F[Option[SbtVersion]] =
+  private def getSbtVersion(buildRootDir: File): F[Option[Version]] =
     for {
-      buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
-      maybeProperties <- fileAlg.readFile(buildRootDir / "project" / "build.properties")
+      maybeProperties <- fileAlg.readFile(buildRootDir / project / buildPropertiesName)
       version = maybeProperties.flatMap(parser.parseBuildProperties)
     } yield version
+
+  private def metaBuildsCount(buildRootDir: File): F[Int] =
+    fs2.Stream
+      .iterate(buildRootDir / project)(_ / project)
+      .take(5L) // Use an upper bound for the meta-builds count to prevent DoS attacks.
+      .evalMap(fileAlg.isDirectory)
+      .takeWhile(identity)
+      .compile
+      .count
+      .map(_.toInt)
 
   override def getDependencies(buildRoot: BuildRoot): F[List[Scope.Dependencies]] =
     for {
       buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
-      commands = Nel.of(crossStewardDependencies, reloadPlugins, stewardDependencies)
-      lines <- sbt(commands, buildRootDir)
+      maybeSbtVersion <- getSbtVersion(buildRootDir)
+      metaBuilds <- metaBuildsCount(buildRootDir)
+      lines <- addStewardPluginTemporarily(buildRootDir, maybeSbtVersion, metaBuilds).surround {
+        val commands = Nel.of(crossStewardDependencies) ++
+          List.fill(metaBuilds)(List(reloadPlugins, stewardDependencies)).flatten
+        sbt(commands, buildRootDir)
+      }
       dependencies = parser.parseDependencies(lines)
-      additionalDependencies <- getAdditionalDependencies(buildRoot)
-    } yield additionalDependencies ::: dependencies
+      maybeSbtDependency = maybeSbtVersion.flatMap(scopedSbtDependency).map(_.map(List(_))).toList
+    } yield maybeSbtDependency ::: dependencies
+
+  private def addStewardPluginTemporarily(
+      buildRootDir: File,
+      maybeSbtVersion: Option[Version],
+      metaBuilds: Int
+  ): Resource[F, Unit] =
+    for {
+      _ <- Resource.unit[F]
+      pluginVersion = maybeSbtVersion match {
+        case Some(v) if v < Version("1.3.11") => "1_0_0"
+        case _                                => "1_3_11"
+      }
+      plugin <- Resource.eval(stewardPlugin(pluginVersion))
+      _ <- List
+        .iterate(buildRootDir / project, metaBuilds + 1)(_ / project)
+        .foldMap(fileAlg.createTemporarily(_, plugin))
+    } yield ()
+
+  private def stewardPlugin(version: String): F[FileData] = {
+    val name = s"StewardPlugin_$version.scala"
+    fileAlg.readResource(name).map(FileData(s"scala-steward-$name", _))
+  }
+
+  private def scopedSbtDependency(sbtVersion: Version): Option[Scope[Dependency]] =
+    sbtDependency(sbtVersion).map(dep => Scope(dep, List(config.defaultResolver)))
 
   override def runMigration(buildRoot: BuildRoot, migration: ScalafixMigration): F[Unit] =
     migration.targetOrDefault match {
@@ -83,31 +109,32 @@ final class SbtAlg[F[_]](config: Config)(implicit
     }
 
   private def runSourcesMigration(buildRoot: BuildRoot, migration: ScalafixMigration): F[Unit] =
-    sbtScalaFixPluginVersion.foreachF { pluginVersion =>
-      addGlobalPluginTemporarily(scalaStewardScalafixSbt(pluginVersion)).surround {
-        workspaceAlg.buildRootDir(buildRoot).flatMap { buildRootDir =>
-          val withScalacOptions =
-            migration.scalacOptions.fold(Resource.unit[F]) { opts =>
-              val file = scalaStewardScalafixOptions(opts.toList)
-              fileAlg.createTemporarily(buildRootDir / file.name, file.content)
-            }
-          val scalafixCmds = migration.rewriteRules.map(rule => s"$scalafixAll $rule").toList
-          withScalacOptions.surround(sbt(Nel(scalafixEnable, scalafixCmds), buildRootDir).void)
+    OptionT(latestSbtScalafixVersion).foreachF { pluginVersion =>
+      workspaceAlg.buildRootDir(buildRoot).flatMap { buildRootDir =>
+        val plugin = scalaStewardSbtScalafix(pluginVersion)
+        fileAlg.createTemporarily(buildRootDir / project, plugin).surround {
+          val withScalacOptions = migration.scalacOptions.fold(Resource.unit[F]) { opts =>
+            val options = scalaStewardScalafixOptions(opts.toList)
+            fileAlg.createTemporarily(buildRootDir, options)
+          }
+          withScalacOptions.surround {
+            val scalafixCmds = migration.rewriteRules.map(rule => s"$scalafixAll $rule").toList
+            val slurpOptions = SlurpOptions.ignoreBufferOverflow
+            sbt(Nel(scalafixEnable, scalafixCmds), buildRootDir, slurpOptions).void
+          }
         }
       }
     }
 
-  private def sbtScalaFixPluginVersion: OptionT[F, String] =
-    OptionT(
-      versionsCache
-        .getVersions(Scope(sbtScalaFixDependency, List(config.defaultResolver)), None)
-        .map(_.lastOption.map(_.value))
-    )
+  private def latestSbtScalafixVersion: F[Option[Version]] =
+    versionsCache
+      .getVersions(Scope(sbtScalafixDependency, List(config.defaultResolver)), None)
+      .map(_.lastOption)
 
   private def runBuildMigration(buildRoot: BuildRoot, migration: ScalafixMigration): F[Unit] =
     for {
       buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
-      projectDir = buildRootDir / "project"
+      projectDir = buildRootDir / project
       files0 <- (
         fileAlg.walk(buildRootDir, 1).filter(_.extension.contains(".sbt")) ++
           fileAlg.walk(projectDir, 3).filter(_.extension.exists(Set(".sbt", ".scala")))
@@ -117,10 +144,11 @@ final class SbtAlg[F[_]](config: Config)(implicit
       }
     } yield ()
 
-  private val sbtDir: F[File] =
-    fileAlg.home.map(_ / ".sbt")
-
-  private def sbt(sbtCommands: Nel[String], repoDir: File): F[List[String]] =
+  private def sbt(
+      sbtCommands: Nel[String],
+      repoDir: File,
+      slurpOptions: SlurpOptions = Set.empty
+  ): F[List[String]] =
     maybeIgnoreOptsFiles(repoDir).surround {
       val command =
         Nel.of(
@@ -128,18 +156,17 @@ final class SbtAlg[F[_]](config: Config)(implicit
           "-Dsbt.color=false",
           "-Dsbt.log.noformat=true",
           "-Dsbt.supershell=false",
+          "-Dsbt.server.forcestart=true",
           sbtCommands.mkString_(";", ";", "")
         )
-      processAlg.execSandboxed(command, repoDir)
+      processAlg.execSandboxed(command, repoDir, slurpOptions = slurpOptions)
     }
 
-  private def maybeIgnoreOptsFiles[A](dir: File): Resource[F, Unit] =
+  private def maybeIgnoreOptsFiles(dir: File): Resource[F, Unit] =
     if (config.ignoreOptsFiles) ignoreOptsFiles(dir) else Resource.unit[F]
 
   private def ignoreOptsFiles(dir: File): Resource[F, Unit] =
     List(".jvmopts", ".sbtopts").traverse_(file => fileAlg.removeTemporarily(dir / file))
 
-  private def getAdditionalDependencies(buildRoot: BuildRoot): F[List[Scope.Dependencies]] =
-    getSbtDependency(buildRoot)
-      .map(_.map(dep => Scope(List(dep), List(config.defaultResolver))).toList)
+  private val project = "project"
 }

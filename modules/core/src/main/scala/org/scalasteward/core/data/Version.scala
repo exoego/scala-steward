@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -124,6 +124,10 @@ final case class Version(value: String) {
 }
 
 object Version {
+  case class Update(currentVersion: Version, nextVersion: Version)
+
+  val tagNames: List[Version => String] = List("v" + _, _.value, "release-" + _)
+
   implicit val versionCodec: Codec[Version] =
     deriveUnwrappedCodec
 
@@ -162,10 +166,11 @@ object Version {
     }
     final case class Alpha(value: String) extends Component {
       def isPreReleaseIdent: Boolean = order < 0
-      def isSnapshotIdent: Boolean = order <= -6
+      def isSnapshotIdent: Boolean = order <= -7
       def order: Int =
         value.toUpperCase match {
-          case "SNAP" | "SNAPSHOT" | "NIGHTLY" => -6
+          case "SNAP" | "SNAPSHOT" | "NIGHTLY" => -7
+          case "FEAT" | "FEATURE"              => -6
           case "ALPHA" | "PREVIEW"             => -5
           case "BETA" | "B"                    => -4
           case "EA" /* early access */         => -3
@@ -185,7 +190,7 @@ object Version {
       val numeric = Numbers.digits.map(s => List(Numeric(s)))
       val alpha = Parser.charsWhile(c => !digits(c) && !separators(c)).map(s => List(Alpha(s)))
       val separator = Parser.charIn(separators).map(c => List(Separator(c)))
-      val hash = (Parser.charIn('-', '+') ~
+      val hash = (Parser.charIn(separators) ~
         Parser.char('g').string.? ~
         Rfc5234.hexdig.rep(6).string.filterNot(startsWithDate)).backtrack
         .map { case ((s, g), h) => List(Separator(s), Hash(g.getOrElse("") + h)) }

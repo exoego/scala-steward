@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,19 @@
 package org.scalasteward.core.io
 
 import better.files.File
-import cats.FlatMap
+import cats.Monad
 import cats.syntax.all._
 import org.scalasteward.core.application.Config
-import org.scalasteward.core.vcs.data.{BuildRoot, Repo}
+import org.scalasteward.core.buildtool.BuildRoot
+import org.scalasteward.core.data.Repo
 import org.typelevel.log4cats.Logger
 
 trait WorkspaceAlg[F[_]] {
-  def cleanWorkspace: F[Unit]
+  def removeAnyRunSpecificFiles: F[Unit]
 
   def rootDir: F[File]
+
+  def runSummaryFile: F[File]
 
   def repoDir(repo: Repo): F[File]
 
@@ -34,30 +37,47 @@ trait WorkspaceAlg[F[_]] {
 }
 
 object WorkspaceAlg {
+
+  val RunSummaryFileName: String = "run-summary.md"
+
   def create[F[_]](config: Config)(implicit
       fileAlg: FileAlg[F],
       logger: Logger[F],
-      F: FlatMap[F]
+      F: Monad[F]
   ): WorkspaceAlg[F] =
     new WorkspaceAlg[F] {
-      private[this] val reposDir = config.workspace / "repos"
+      private val reposDir: File =
+        config.workspace / "repos"
 
-      private[this] def repoDirUnsafe(repo: Repo) = reposDir / repo.owner / repo.repo
+      private val runSummary: File =
+        config.workspace / RunSummaryFileName
 
-      override def cleanWorkspace: F[Unit] =
-        for {
-          _ <- logger.info(s"Clean workspace ${config.workspace}")
-          _ <- fileAlg.deleteForce(reposDir)
-          _ <- rootDir
-        } yield ()
+      /* We don't want the `ensureExists()` side-effect for these files - here, we only want to delete them,
+       * not accidentally re-create them while trying to delete them.
+       */
+      private val runSpecificFiles: Seq[File] = Seq(runSummary, reposDir)
+
+      private def toFile(repo: Repo): File =
+        reposDir / repo.owner / repo.repo
+
+      private def toFile(buildRoot: BuildRoot): File =
+        toFile(buildRoot.repo) / buildRoot.relativePath
+
+      override def removeAnyRunSpecificFiles: F[Unit] =
+        logger.info(s"Removing any run-specific files") >> runSpecificFiles.traverse_(
+          fileAlg.deleteForce
+        )
 
       override def rootDir: F[File] =
         fileAlg.ensureExists(config.workspace)
 
+      override def runSummaryFile: F[File] =
+        fileAlg.ensureExists(runSummary.parent).map(_ => runSummary)
+
       override def repoDir(repo: Repo): F[File] =
-        fileAlg.ensureExists(repoDirUnsafe(repo))
+        fileAlg.ensureExists(toFile(repo))
 
       override def buildRootDir(buildRoot: BuildRoot): F[File] =
-        fileAlg.ensureExists(repoDirUnsafe(buildRoot.repo) / buildRoot.relativePath)
+        fileAlg.ensureExists(toFile(buildRoot))
     }
 }

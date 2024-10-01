@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ trait KeyValueStore[F[_], K, V] {
     get(key).map(_.getOrElse(default))
 
   final def modifyF(key: K)(f: Option[V] => F[Option[V]])(implicit F: FlatMap[F]): F[Option[V]] =
-    get(key).flatMap(maybeValue => f(maybeValue).flatTap(set(key, _)))
+    get(key).flatMap(f).flatTap(set(key, _))
 
   final def put(key: K, value: V): F[Unit] =
     set(key, Some(value))

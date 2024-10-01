@@ -7,28 +7,22 @@ import org.scalacheck.{Arbitrary, Cogen, Gen}
 import org.scalasteward.core.TestSyntax._
 import org.scalasteward.core.data._
 import org.scalasteward.core.git.Sha1
-import org.scalasteward.core.git.Sha1.HexString
 import org.scalasteward.core.repocache.RepoCache
 import org.scalasteward.core.repoconfig.PullRequestFrequency.{Asap, Timespan}
 import org.scalasteward.core.repoconfig._
-import org.scalasteward.core.util.Change
-import org.scalasteward.core.util.Change.{Changed, Unchanged}
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import scala.concurrent.duration.FiniteDuration
 
 object TestInstances {
   val dummySha1: Sha1 =
-    Sha1(HexString.unsafeFrom("da39a3ee5e6b4b0d3255bfef95601890afd80709"))
+    Sha1.unsafeFrom("da39a3ee5e6b4b0d3255bfef95601890afd80709")
 
   val dummyRepoCache: RepoCache =
     RepoCache(dummySha1, List.empty, Option.empty, Option.empty)
 
   val dummyRepoCacheWithParsingError: RepoCache =
     dummyRepoCache.copy(maybeRepoConfigParsingError = Some("Failed to parse .scala-steward.conf"))
-
-  implicit def changeArbitrary[T](implicit arbT: Arbitrary[T]): Arbitrary[Change[T]] =
-    Arbitrary(arbT.arbitrary.flatMap(t => Gen.oneOf(Changed(t), Unchanged(t))))
 
   implicit val ioLogger: Logger[IO] =
     Slf4jLogger.getLogger[IO]

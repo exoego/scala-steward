@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import cats.syntax.all._
 import org.http4s.Uri
 import org.scalasteward.core.application.Config.GitCfg
 import org.scalasteward.core.git.FileGitAlg.{dotdot, gitCmd}
+import org.scalasteward.core.io.process.{ProcessFailedException, SlurpOptions}
 import org.scalasteward.core.io.{FileAlg, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.util.Nel
 
@@ -32,54 +33,62 @@ final class FileGitAlg[F[_]](config: GitCfg)(implicit
     F: MonadCancelThrow[F]
 ) extends GenGitAlg[F, File] {
   override def add(repo: File, file: String): F[Unit] =
-    git("add", file)(repo).void
+    git_("add", file)(repo).void
 
   override def branchAuthors(repo: File, branch: Branch, base: Branch): F[List[String]] =
     git("log", "--pretty=format:'%an'", dotdot(base, branch))(repo).map(_.distinct)
 
   override def branchExists(repo: File, branch: Branch): F[Boolean] =
-    git("branch", "--list", "--no-color", "--all", branch.name)(repo).map(_.mkString.trim.nonEmpty)
+    git_("branch", "--list", "--no-color", "--all", branch.name)(repo).map(_.mkString.trim.nonEmpty)
 
   override def branchesDiffer(repo: File, b1: Branch, b2: Branch): F[Boolean] =
-    git("diff", "--name-only", b1.name, b2.name, "--")(repo).map(_.nonEmpty)
+    git_("diff", "--name-only", b1.name, b2.name, "--")(repo).map(_.nonEmpty)
 
   override def checkoutBranch(repo: File, branch: Branch): F[Unit] =
-    git("checkout", branch.name)(repo).void
+    git_("checkout", branch.name)(repo).void
+
+  override def checkIgnore(repo: File, file: String): F[Boolean] =
+    git_("check-ignore", file)(repo)
+      .as(true)
+      .recover { case ex: ProcessFailedException if ex.exitValue === 1 => false }
 
   override def clone(repo: File, url: Uri): F[Unit] =
     for {
       rootDir <- workspaceAlg.rootDir
-      _ <- git("clone", url.toString, repo.pathAsString)(rootDir)
+      _ <- git_("clone", "-c", "clone.defaultRemoteName=origin", url.toString, repo.pathAsString)(
+        rootDir
+      )
     } yield ()
 
   override def cloneExists(repo: File): F[Boolean] =
     fileAlg.isDirectory(repo / ".git")
 
   override def commitAll(repo: File, message: CommitMsg): F[Commit] = {
-    val messages = message.toNel.foldMap(m => List("-m", m))
-    git("commit" :: "--all" :: sign :: messages: _*)(repo) >>
+    val messages = message.paragraphs.foldMap(m => List("-m", m))
+    val trailers = message.trailers.foldMap { case (k, v) => List("--trailer", s"$k=$v") }
+    git_("commit" :: "--all" :: sign :: messages ++ trailers: _*)(repo) >>
       latestSha1(repo, Branch.head).map(Commit.apply)
   }
 
   override def containsChanges(repo: File): F[Boolean] =
-    git("status", "--porcelain", "--untracked-files=no", "--ignore-submodules")(repo)
+    git_("status", "--porcelain", "--untracked-files=no", "--ignore-submodules")(repo)
       .map(_.nonEmpty)
 
   override def createBranch(repo: File, branch: Branch): F[Unit] =
-    git("checkout", "-b", branch.name)(repo).void
+    git_("checkout", "-b", branch.name)(repo).void
 
   override def currentBranch(repo: File): F[Branch] =
     git("rev-parse", "--abbrev-ref", Branch.head.name)(repo)
       .map(lines => Branch(lines.mkString.trim))
 
   override def deleteLocalBranch(repo: File, branch: Branch): F[Unit] =
-    git("branch", "--delete", "--force", branch.name)(repo).void
+    git_("branch", "--delete", "--force", branch.name)(repo).void
 
   override def deleteRemoteBranch(repo: File, branch: Branch): F[Unit] =
-    git("push", "origin", "--delete", branch.name)(repo).void
+    git_("push", "origin", "--delete", branch.name)(repo).void
 
   override def discardChanges(repo: File): F[Unit] =
-    git("checkout", "--", ".")(repo).void
+    git_("checkout", "--", ".")(repo).void
 
   override def findFilesContaining(repo: File, string: String): F[List[String]] =
     git("grep", "-I", "--fixed-strings", "--files-with-matches", string)(repo)
@@ -87,8 +96,8 @@ final class FileGitAlg[F[_]](config: GitCfg)(implicit
       .map(_.filter(_.nonEmpty))
 
   override def hasConflicts(repo: File, branch: Branch, base: Branch): F[Boolean] = {
-    val tryMerge = git("merge", "--no-commit", "--no-ff", branch.name)(repo)
-    val abortMerge = git("merge", "--abort")(repo).void
+    val tryMerge = git_("merge", "--no-commit", "--no-ff", branch.name)(repo)
+    val abortMerge = git_("merge", "--abort")(repo).attempt.void
 
     returnToCurrentBranch(repo) {
       checkoutBranch(repo, base) >> F.guarantee(tryMerge, abortMerge).attempt.map(_.isLeft)
@@ -96,56 +105,29 @@ final class FileGitAlg[F[_]](config: GitCfg)(implicit
   }
 
   override def initSubmodules(repo: File): F[Unit] =
-    git("submodule", "update", "--init", "--recursive")(repo).void
+    git_("submodule", "update", "--init", "--recursive")(repo).void
 
   override def isMerged(repo: File, branch: Branch, base: Branch): F[Boolean] =
-    git("log", "--pretty=format:%h", dotdot(base, branch))(repo).map(_.isEmpty)
+    git_("log", "--pretty=format:%h", dotdot(base, branch))(repo).map(_.isEmpty)
 
   override def latestSha1(repo: File, branch: Branch): F[Sha1] =
     git("rev-parse", "--verify", branch.name)(repo)
       .flatMap(lines => F.fromEither(Sha1.from(lines.mkString("").trim)))
 
-  override def mergeTheirs(repo: File, branch: Branch): F[Option[Commit]] =
-    for {
-      before <- latestSha1(repo, Branch.head)
-      _ <- git("merge", "--strategy-option=theirs", sign, branch.name)(repo).void
-        .handleErrorWith { throwable =>
-          // Resolve CONFLICT (modify/delete) by deleting unmerged files:
-          for {
-            unmergedFiles <- git("diff", "--name-only", "--diff-filter=U")(repo)
-            _ <- Nel
-              .fromList(unmergedFiles.filter(_.nonEmpty))
-              .fold(F.raiseError[Unit](throwable))(_.traverse_(file => git("rm", file)(repo)))
-            _ <- git("commit", "--all", "--no-edit", sign)(repo)
-          } yield ()
-        }
-      after <- latestSha1(repo, Branch.head)
-    } yield Option.when(before =!= after)(Commit(after))
-
   override def push(repo: File, branch: Branch): F[Unit] =
-    git("push", "--force", "--set-upstream", "origin", branch.name)(repo).void
+    git_("push", "--force", "--set-upstream", "origin", branch.name)(repo).void
 
   override def removeClone(repo: File): F[Unit] =
     fileAlg.deleteForce(repo)
 
-  override def revertChanges(repo: File, base: Branch): F[Option[Commit]] = {
-    val range = dotdot(base, Branch.head)
-    git("log", "--pretty=format:%h %p", range)(repo).flatMap { commitsWithParents =>
-      val commitsUntilMerge = commitsWithParents.map(_.split(' ')).takeWhile(_.length === 2)
-      val commits = commitsUntilMerge.flatMap(_.headOption)
-      if (commits.isEmpty) F.pure(None)
-      else {
-        val msg = CommitMsg(s"Revert commit(s) " + commits.mkString(", "))
-        git("revert" :: "--no-commit" :: commits: _*)(repo) >> commitAllIfDirty(repo, msg)
-      }
-    }
-  }
+  override def resetHard(repo: File, base: Branch): F[Unit] =
+    git_("reset", "--hard", base.name, "--")(repo).void
 
   override def setAuthor(repo: File, author: Author): F[Unit] =
     for {
-      _ <- git("config", "user.email", author.email)(repo)
-      _ <- git("config", "user.name", author.name)(repo)
-      _ <- author.signingKey.traverse_(key => git("config", "user.signingKey", key)(repo))
+      _ <- git_("config", "user.email", author.email)(repo)
+      _ <- git_("config", "user.name", author.name)(repo)
+      _ <- author.signingKey.traverse_(key => git_("config", "user.signingKey", key)(repo))
     } yield ()
 
   override def syncFork(repo: File, upstreamUrl: Uri, defaultBranch: Branch): F[Unit] =
@@ -154,20 +136,37 @@ final class FileGitAlg[F[_]](config: GitCfg)(implicit
       remote = "upstream"
       branch = defaultBranch.name
       remoteBranch = s"$remote/$branch"
-      _ <- git("remote", "add", remote, upstreamUrl.toString)(repo)
-      _ <- git("fetch", "--force", "--tags", remote, branch)(repo)
-      _ <- git("checkout", "-B", branch, "--track", remoteBranch)(repo)
-      _ <- git("merge", remoteBranch)(repo)
+      _ <- git_("remote", "add", remote, upstreamUrl.toString)(repo)
+      _ <- git_("fetch", "--force", "--tags", remote, branch)(repo)
+      _ <- git_("checkout", "-B", branch, "--track", remoteBranch)(repo)
+      _ <- git_("merge", remoteBranch)(repo)
       _ <- push(repo, defaultBranch)
     } yield ()
 
   override def version: F[String] =
-    workspaceAlg.rootDir.flatMap(git("--version")).map(_.mkString.trim)
+    workspaceAlg.rootDir.flatMap(git("--version")(_)).map(_.mkString.trim)
 
-  private def git(args: String*)(repo: File): F[List[String]] = {
-    val extraEnv = "GIT_ASKPASS" -> config.gitAskPass.pathAsString
-    processAlg.exec(gitCmd ++ args.toList, repo, extraEnv)
+  private def git(args: String*)(
+      repo: File,
+      slurpOptions: SlurpOptions = Set.empty
+  ): F[List[String]] = {
+    val extraEnv = List("GIT_ASKPASS" -> config.gitAskPass.pathAsString)
+    processAlg
+      .exec(gitCmd ++ args.toList, repo, extraEnv, slurpOptions)
+      .recoverWith {
+        case ex: ProcessFailedException
+            if ex.getMessage.contains("fatal: not in a git directory") =>
+          // `git status` prints a more informative error message than some other git commands, like `git config`
+          // this will hopefully print that error message to the logs in addition to the actual failure
+          processAlg
+            .exec(Nel.of("git", "status"), repo, List.empty, slurpOptions)
+            .attempt
+            .void >> ex.raiseError
+      }
   }
+
+  private def git_(args: String*)(repo: File): F[List[String]] =
+    git(args: _*)(repo, SlurpOptions.ignoreBufferOverflow)
 
   private val sign: String =
     if (config.signCommits) "--gpg-sign" else "--no-gpg-sign"

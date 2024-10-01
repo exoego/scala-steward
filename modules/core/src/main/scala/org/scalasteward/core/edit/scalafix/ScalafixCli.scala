@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import better.files.File
 import cats.Monad
 import cats.syntax.all._
 import org.scalasteward.core.edit.scalafix.ScalafixCli.scalafixBinary
+import org.scalasteward.core.io.process.SlurpOptions
 import org.scalasteward.core.io.{ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.util.Nel
 
@@ -31,7 +32,7 @@ final class ScalafixCli[F[_]](implicit
   def runMigration(workingDir: File, files: Nel[File], migration: ScalafixMigration): F[Unit] = {
     val rules = migration.rewriteRules.map("--rules=" + _)
     val cmd = scalafixBinary :: rules ::: files.map(_.pathAsString)
-    processAlg.exec(cmd, workingDir).void
+    processAlg.exec(cmd, workingDir, slurpOptions = SlurpOptions.ignoreBufferOverflow).void
   }
 
   def version: F[String] = {

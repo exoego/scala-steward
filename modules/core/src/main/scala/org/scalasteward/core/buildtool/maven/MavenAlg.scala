@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,23 +20,25 @@ import better.files.File
 import cats.effect.{MonadCancelThrow, Resource}
 import cats.syntax.all._
 import org.scalasteward.core.application.Config
-import org.scalasteward.core.buildtool.BuildToolAlg
+import org.scalasteward.core.buildtool.{BuildRoot, BuildToolAlg}
 import org.scalasteward.core.data._
-import org.scalasteward.core.edit.scalafix.ScalafixMigration
 import org.scalasteward.core.io.{FileAlg, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.data.BuildRoot
+import org.typelevel.log4cats.Logger
 
 final class MavenAlg[F[_]](config: Config)(implicit
     fileAlg: FileAlg[F],
+    override protected val logger: Logger[F],
     processAlg: ProcessAlg[F],
     workspaceAlg: WorkspaceAlg[F],
     F: MonadCancelThrow[F]
 ) extends BuildToolAlg[F] {
+  override def name: String = "Maven"
+
   override def containsBuild(buildRoot: BuildRoot): F[Boolean] =
     workspaceAlg
       .buildRootDir(buildRoot)
-      .flatMap(buildRootDir => fileAlg.isRegularFile(buildRootDir / "pom.xml"))
+      .flatMap(buildRootDir => fileAlg.isRegularFile(buildRootDir / pomXmlName))
 
   override def getDependencies(buildRoot: BuildRoot): F[List[Scope.Dependencies]] =
     for {
@@ -53,14 +55,14 @@ final class MavenAlg[F[_]](config: Config)(implicit
       resolvers = parser.parseResolvers(repositoriesRaw).distinct
     } yield List(Scope(dependencies, resolvers))
 
-  override def runMigration(buildRoot: BuildRoot, migration: ScalafixMigration): F[Unit] =
-    F.unit
+  override protected val scalafixIssue: Option[String] =
+    Some("https://github.com/scala-steward-org/scala-steward/issues/2839")
 
   private def exec(command: Nel[String], repoDir: File): F[List[String]] =
     maybeIgnoreOptsFiles(repoDir).surround(processAlg.execSandboxed(command, repoDir))
 
   private def mvnCmd(commands: String*): Nel[String] =
-    Nel("mvn", "--batch-mode" :: commands.toList)
+    Nel("mvn", args.batchMode :: commands.toList)
 
   private def maybeIgnoreOptsFiles(dir: File): Resource[F, Unit] =
     if (config.ignoreOptsFiles) ignoreOptsFiles(dir) else Resource.unit[F]

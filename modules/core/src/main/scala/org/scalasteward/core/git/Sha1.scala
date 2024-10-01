@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,9 @@ object Sha1 {
 
   def from(s: String): Either[Throwable, Sha1] =
     HexString.from(s).bimap(new Throwable(_), Sha1.apply)
+
+  def unsafeFrom(s: String): Sha1 =
+    from(s).fold(throw _, identity)
 
   implicit val sha1Eq: Eq[Sha1] =
     Eq.by(_.value.value)

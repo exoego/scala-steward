@@ -7,15 +7,14 @@ would not compile with the new version of the dependency.
 
 Here are two pull requests that demonstrate this feature:
 
+* https://github.com/coursier/versions/pull/25
 * https://github.com/barambani/http4s-extend/pull/67/files
-* https://github.com/fthomas/scalafix-test/pull/6/files
 
-And here are all pull requests where Scala Steward applied Scalafix
-migrations:
+More pull requests where Scala Steward applied Scalafix migrations can be found here:
 
-* [Created pull requests](https://github.com/search?q=author%3Ascala-steward+is%3Apr+scalafix-migrations)
+* [Created pull requests](https://github.com/search?q=author%3Ascala-steward+is%3Apr+scalafix-migrations&type=pullrequests)
   ([compact](             https://github.com/pulls?q=author%3Ascala-steward+is%3Apr+scalafix-migrations))
-* [Merged pull requests]( https://github.com/search?q=author%3Ascala-steward+is%3Amerged+sort%3Aupdated-desc+scalafix-migrations)
+* [Merged pull requests]( https://github.com/search?q=author%3Ascala-steward+is%3Amerged+sort%3Aupdated-desc+scalafix-migrations&type=pullrequests)
   ([compact](             https://github.com/pulls?q=author%3Ascala-steward+is%3Amerged+sort%3Aupdated-desc+scalafix-migrations))
 
 ## How does this work?
@@ -31,7 +30,7 @@ which resolves those rules and edits the source code accordingly.
 See the [Scalafix Developer Guide][scalafix-dev-guide] for more information
 about writing rewrite rules or have a look at the existing
 [migration rules][migrations] for inspiration. Rules in Scala Steward must be
-accessible via the [github:][using-github], the [http:][using-http] or the
+accessible via the [github:][using-github], the [http:][using-http], or the
 [dependency:][using-dependency] schemes.
 
 ## Adding migration rules to Scala Steward
@@ -39,7 +38,8 @@ accessible via the [github:][using-github], the [http:][using-http] or the
 After you have written a new migration rule for a new version of your project,
 Scala Steward needs to be made aware of it. Creating a pull request that adds
 the new rule to the list of [migrations][migrations] is enough for that. Once
-that pull request is merged, Scala Steward will start using this migration.
+that pull request is merged, all Scala Steward instances will start using this
+migration.
 
 When running Scala Steward you can also specify files or URLs (via the
 `--scalafix-migrations` command-line option) that contain additional
@@ -63,7 +63,7 @@ Pull requests that added migration rules can be found [here][scalafix-prs].
 [migrations]: https://github.com/scala-steward-org/scala-steward/blob/main/modules/core/src/main/resources/scalafix-migrations.conf
 [scalafix-dev-guide]: https://scalacenter.github.io/scalafix/docs/developers/setup.html
 [using-dependency]: https://scalacenter.github.io/scalafix/docs/rules/external-rules.html
-[using-github]: https://scalacenter.github.io/scalafix/docs/developers/sharing-rules.html#using-github
-[using-http]: https://scalacenter.github.io/scalafix/docs/developers/sharing-rules.html#using-http
+[using-github]: https://scalacenter.github.io/scalafix/docs/developers/tutorial.html#using-github
+[using-http]: https://scalacenter.github.io/scalafix/docs/developers/tutorial.html#using-http
 [scalafix-prs]: https://github.com/scala-steward-org/scala-steward/pulls?q=label%3Ascalafix-migration
 [HOCON]: https://github.com/lightbend/config/blob/master/HOCON.md

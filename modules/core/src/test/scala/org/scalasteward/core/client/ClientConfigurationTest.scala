@@ -2,20 +2,24 @@ package org.scalasteward.core.client
 
 import cats.effect._
 import cats.implicits._
+import eu.timepit.refined.auto._
+import eu.timepit.refined.types.numeric.PosInt
 import munit.CatsEffectSuite
 import org.http4s.HttpRoutes
 import org.http4s.client._
 import org.http4s.headers.{`Retry-After`, `User-Agent`, Location}
 import org.http4s.implicits._
 import org.typelevel.ci._
-import eu.timepit.refined.auto._
-import eu.timepit.refined.types.numeric.PosInt
+import org.typelevel.log4cats.LoggerFactory
+import org.typelevel.log4cats.slf4j.Slf4jFactory
+
+import scala.concurrent.duration._
 
 class ClientConfigurationTest extends CatsEffectSuite {
 
   private val userAgentValue = "my-user-agent"
   private val dummyUserAgent =
-    `User-Agent`.parse(userAgentValue).getOrElse(fail("unable to create user agent"))
+    `User-Agent`.parse(1)(userAgentValue).getOrElse(fail("unable to create user agent"))
 
   private val routes: HttpRoutes[IO] = {
     import org.http4s.dsl.io._
@@ -71,8 +75,10 @@ class ClientConfigurationTest extends CatsEffectSuite {
 
   test("disableFollowRedirect does not follow redirect") {
     import org.http4s.Method._
-    import org.http4s.blaze.server._
+    import org.http4s.ember.server._
     import org.http4s.client.dsl.io._
+
+    implicit val loggerFactory: LoggerFactory[IO] = Slf4jFactory.create[IO]
 
     val regularClient = ClientConfiguration.build[IO](
       ClientConfiguration.BuilderMiddleware.default,
@@ -83,7 +89,11 @@ class ClientConfigurationTest extends CatsEffectSuite {
       ClientConfiguration.setUserAgent(dummyUserAgent)
     )
     val getServer =
-      BlazeServerBuilder[IO].bindAny("localhost").withHttpApp(routes.orNotFound).resource
+      EmberServerBuilder
+        .default[IO]
+        .withShutdownTimeout(1.second)
+        .withHttpApp(routes.orNotFound)
+        .build
 
     val test = (regularClient, disabledClient, getServer).tupled.use {
       case (regClient, disClient, s) =>

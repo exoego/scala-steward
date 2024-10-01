@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,12 +38,12 @@ object GroupRepoConfig {
     val forUpdate: Update.Single => String = {
       case s: Update.ForArtifactId =>
         s"""{
-           |  pullRequests = { frequency = "@monthly" },
+           |  pullRequests = { frequency = "30 days" },
            |  dependency = { groupId = "${s.groupId}", artifactId = "${s.artifactId.name}" }
            |}""".stripMargin
       case g: Update.ForGroupId =>
         s"""{
-           |  pullRequests = { frequency = "@monthly" },
+           |  pullRequests = { frequency = "30 days" },
            |  dependency = { groupId = "${g.groupId}" }
            |}""".stripMargin
     }

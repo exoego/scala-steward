@@ -2,11 +2,13 @@ package org.scalasteward.core.io
 
 import better.files.File
 import cats.data.Kleisli
+import org.scalasteward.core.buildtool.BuildRoot
+import org.scalasteward.core.data.Repo
+import org.scalasteward.core.io.WorkspaceAlg.RunSummaryFileName
 import org.scalasteward.core.mock.{MockConfig, MockEff}
-import org.scalasteward.core.vcs.data.{BuildRoot, Repo}
 
 class MockWorkspaceAlg extends WorkspaceAlg[MockEff] {
-  override def cleanWorkspace: MockEff[Unit] =
+  override def removeAnyRunSpecificFiles: MockEff[Unit] =
     Kleisli.pure(())
 
   override def rootDir: MockEff[File] =
@@ -16,5 +18,7 @@ class MockWorkspaceAlg extends WorkspaceAlg[MockEff] {
     rootDir.map(_ / repo.owner / repo.repo)
 
   override def buildRootDir(buildRoot: BuildRoot): MockEff[File] =
-    repoDir(buildRoot.repo)
+    repoDir(buildRoot.repo).map(_ / buildRoot.relativePath)
+
+  def runSummaryFile: MockEff[File] = rootDir.map(_ / RunSummaryFileName)
 }

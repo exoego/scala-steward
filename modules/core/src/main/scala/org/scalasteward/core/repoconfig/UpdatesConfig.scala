@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,21 +23,26 @@ import io.circe.generic.extras.Configuration
 import io.circe.generic.extras.semiauto._
 import io.circe.refined._
 import io.circe.{Codec, Decoder}
+import org.scalasteward.core.buildtool.maven.pomXmlName
+import org.scalasteward.core.buildtool.mill.MillAlg
+import org.scalasteward.core.buildtool.sbt.buildPropertiesName
 import org.scalasteward.core.data.{GroupId, Update}
+import org.scalasteward.core.repoconfig.UpdatesConfig.defaultLimit
+import org.scalasteward.core.scalafmt.scalafmtConfName
 import org.scalasteward.core.update.FilterAlg.{
   FilterResult,
   IgnoredByConfig,
   NotAllowedByConfig,
   VersionPinnedByConfig
 }
-import org.scalasteward.core.util.{combineOptions, Nel}
+import org.scalasteward.core.util.{combineOptions, intellijThisImportIsUsed, Nel}
 
 final case class UpdatesConfig(
     pin: List[UpdatePattern] = List.empty,
     allow: List[UpdatePattern] = List.empty,
     allowPreReleases: List[UpdatePattern] = List.empty,
     ignore: List[UpdatePattern] = List.empty,
-    limit: Option[NonNegInt] = None,
+    limit: Option[NonNegInt] = defaultLimit,
     fileExtensions: Option[List[String]] = None
 ) {
   def fileExtensionsOrDefault: Set[String] =
@@ -85,7 +90,21 @@ final case class UpdatesConfig(
 
 object UpdatesConfig {
   val defaultFileExtensions: Set[String] =
-    Set(".scala", ".sbt", ".sbt.shared", ".sc", ".yml", "pom.xml")
+    Set(
+      MillAlg.millVersionName,
+      MillAlg.millVersionNameInConfig,
+      ".sbt",
+      ".sbt.shared",
+      ".sc",
+      ".scala",
+      scalafmtConfName,
+      ".sdkmanrc",
+      ".yml",
+      buildPropertiesName,
+      pomXmlName
+    )
+
+  val defaultLimit: Option[NonNegInt] = None
 
   implicit val updatesConfigEq: Eq[UpdatesConfig] =
     Eq.fromUniversalEquals
@@ -115,9 +134,9 @@ object UpdatesConfig {
       x: List[UpdatePattern],
       y: List[UpdatePattern]
   ): List[UpdatePattern] =
-    x ::: y.filterNot { p1 =>
-      x.exists(p2 => p1.groupId === p2.groupId && p1.artifactId === p2.artifactId)
-    }
+    x.filterNot { p1 =>
+      y.exists(p2 => p1.groupId === p2.groupId && p1.artifactId === p2.artifactId)
+    } ::: y
 
   private[repoconfig] val nonExistingUpdatePattern: List[UpdatePattern] =
     List(UpdatePattern(GroupId("non-exist"), None, None))
@@ -197,6 +216,5 @@ object UpdatesConfig {
   ): Option[List[String]] =
     combineOptions(x, y)(_.intersect(_))
 
-  // prevent IntelliJ from removing the import of io.circe.refined._
-  locally(refinedDecoder: Decoder[NonNegInt])
+  intellijThisImportIsUsed(refinedDecoder: Decoder[NonNegInt])
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,30 +20,30 @@ import cats.syntax.all._
 import cats.{MonadThrow, Parallel}
 import org.scalasteward.core.application.Config
 import org.scalasteward.core.buildtool.BuildToolDispatcher
-import org.scalasteward.core.data.{Dependency, DependencyInfo, RepoData}
+import org.scalasteward.core.data.{Dependency, DependencyInfo, Repo, RepoData}
+import org.scalasteward.core.forge.data.RepoOut
+import org.scalasteward.core.forge.{ForgeApiAlg, ForgeRepoAlg}
 import org.scalasteward.core.git.GitAlg
 import org.scalasteward.core.repoconfig.RepoConfigAlg
-import org.scalasteward.core.vcs.data.{Repo, RepoOut}
-import org.scalasteward.core.vcs.{VCSApiAlg, VCSRepoAlg}
 import org.typelevel.log4cats.Logger
 
 final class RepoCacheAlg[F[_]](config: Config)(implicit
     buildToolDispatcher: BuildToolDispatcher[F],
+    forgeApiAlg: ForgeApiAlg[F],
+    forgeRepoAlg: ForgeRepoAlg[F],
     gitAlg: GitAlg[F],
     logger: Logger[F],
     parallel: Parallel[F],
     refreshErrorAlg: RefreshErrorAlg[F],
     repoCacheRepository: RepoCacheRepository[F],
     repoConfigAlg: RepoConfigAlg[F],
-    vcsApiAlg: VCSApiAlg[F],
-    vcsRepoAlg: VCSRepoAlg[F],
     F: MonadThrow[F]
 ) {
   def checkCache(repo: Repo): F[(RepoData, RepoOut)] =
     logger.info(s"Check cache of ${repo.show}") >>
       refreshErrorAlg.skipIfFailedRecently(repo) {
         (
-          vcsApiAlg.createForkOrGetRepoWithBranch(repo, config.vcsCfg.doNotFork),
+          forgeApiAlg.createForkOrGetRepoWithBranch(repo, config.forgeCfg.doNotFork),
           repoCacheRepository.findCache(repo)
         ).parTupled.flatMap { case ((repoOut, branchOut), maybeCache) =>
           val latestSha1 = branchOut.commit.sha
@@ -58,7 +58,7 @@ final class RepoCacheAlg[F[_]](config: Config)(implicit
     RepoData(repo, cache, repoConfigAlg.mergeWithGlobal(cache.maybeRepoConfig))
 
   private def cloneAndRefreshCache(repo: Repo, repoOut: RepoOut): F[RepoData] =
-    vcsRepoAlg.cloneAndSync(repo, repoOut) >> refreshCache(repo)
+    forgeRepoAlg.cloneAndSync(repo, repoOut) >> refreshCache(repo)
 
   private def refreshCache(repo: Repo): F[RepoData] =
     for {
@@ -71,9 +71,9 @@ final class RepoCacheAlg[F[_]](config: Config)(implicit
     for {
       branch <- gitAlg.currentBranch(repo)
       latestSha1 <- gitAlg.latestSha1(repo, branch)
-      parsedConfig <- repoConfigAlg.readRepoConfig(repo)
-      maybeConfig = parsedConfig.flatMap(_.toOption)
-      maybeConfigParsingError = parsedConfig.flatMap(_.left.toOption.map(_.getMessage))
+      configParsingResult <- repoConfigAlg.readRepoConfig(repo)
+      maybeConfig = configParsingResult.maybeRepoConfig
+      maybeConfigParsingError = configParsingResult.maybeParsingError.map(_.getMessage)
       config = repoConfigAlg.mergeWithGlobal(maybeConfig)
       dependencies <- buildToolDispatcher.getDependencies(repo, config)
       dependencyInfos <-

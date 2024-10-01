@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,8 @@
 
 package org.scalasteward.core
 
-import org.scalasteward.core.data.Update
+import org.scalasteward.core.data.{Repo, Update}
 import org.scalasteward.core.repoconfig.CommitsConfig
-import org.scalasteward.core.vcs.data.Repo
 
 package object git {
   type GitAlg[F[_]] = GenGitAlg[F, Repo]
@@ -31,7 +30,11 @@ package object git {
     val base = baseBranch.fold("")(branch => s"${branch.name}/")
     update.on(
       update = u => Branch(s"$updateBranchPrefix/$base${u.name}-${u.nextVersion}"),
-      grouped = g => Branch(s"$updateBranchPrefix/$base${g.name}")
+      grouped = g => {
+        val hashString = Math.abs(g.updates.map(_.nextVersion).sortBy(_.value).hashCode()).toString
+        val branch = s"$updateBranchPrefix/$base${g.name}"
+        Branch(branch.replace("${hash}", hashString))
+      }
     )
   }
 

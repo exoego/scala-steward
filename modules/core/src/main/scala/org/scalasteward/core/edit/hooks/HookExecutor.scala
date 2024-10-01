@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,19 +22,19 @@ import cats.syntax.all._
 import org.scalasteward.core.buildtool.sbt.{
   sbtArtifactId,
   sbtGroupId,
-  sbtScalaFixArtifactId,
-  sbtScalaFixGroupId
+  sbtScalafixArtifactId,
+  sbtScalafixGroupId
 }
 import org.scalasteward.core.data._
 import org.scalasteward.core.edit.EditAttempt
 import org.scalasteward.core.edit.EditAttempt.HookEdit
 import org.scalasteward.core.git.{gitBlameIgnoreRevsName, Commit, CommitMsg, GitAlg}
+import org.scalasteward.core.io.process.SlurpOptions
 import org.scalasteward.core.io.{FileAlg, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.repocache.RepoCache
 import org.scalasteward.core.scalafmt.{scalafmtArtifactId, scalafmtGroupId, ScalafmtAlg}
 import org.scalasteward.core.util.Nel
 import org.scalasteward.core.util.logger._
-import org.scalasteward.core.vcs.data.Repo
 import org.typelevel.log4cats.Logger
 
 final class HookExecutor[F[_]](implicit
@@ -67,15 +67,18 @@ final class HookExecutor[F[_]](implicit
       )
       repoDir <- workspaceAlg.repoDir(repo)
       result <- logger.attemptWarn.log("Post-update hook failed") {
-        processAlg.execMaybeSandboxed(hook.useSandbox)(hook.command, repoDir)
+        val slurpOptions = SlurpOptions.ignoreBufferOverflow
+        processAlg
+          .execMaybeSandboxed(hook.useSandbox)(hook.command, repoDir, slurpOptions = slurpOptions)
+          .void
       }
       commitMessage = hook
         .commitMessage(update)
-        .withParagraph(s"Executed command: ${hook.command.mkString_(" ")}")
+        .appendParagraph(s"Executed command: ${hook.command.mkString_(" ")}")
       maybeHookCommit <- gitAlg.commitAllIfDirty(repo, commitMessage)
       maybeBlameIgnoreCommit <-
         maybeHookCommit.flatTraverse(addToGitBlameIgnoreRevs(repo, repoDir, hook, _, commitMessage))
-    } yield HookEdit(hook, result.void, maybeHookCommit.toList ++ maybeBlameIgnoreCommit.toList)
+    } yield HookEdit(hook, result, maybeHookCommit.toList ++ maybeBlameIgnoreCommit.toList)
 
   private def addToGitBlameIgnoreRevs(
       repo: Repo,
@@ -92,9 +95,21 @@ final class HookExecutor[F[_]](implicit
         oldContent <- fileAlg.readFile(file)
         newContent = oldContent.fold(newLines)(_ + "\n" + newLines)
         _ <- fileAlg.writeFile(file, newContent)
-        _ <- gitAlg.add(repo, file.pathAsString)
-        blameIgnoreCommitMsg = CommitMsg(s"Add '${commitMsg.title}' to $gitBlameIgnoreRevsName")
-        maybeBlameIgnoreCommit <- gitAlg.commitAllIfDirty(repo, blameIgnoreCommitMsg)
+        pathAsString = file.pathAsString
+
+        addAndCommit = gitAlg.add(repo, pathAsString).flatMap { _ =>
+          val blameIgnoreCommitMsg =
+            CommitMsg(s"Add '${commitMsg.title}' to $gitBlameIgnoreRevsName")
+          gitAlg.commitAllIfDirty(repo, blameIgnoreCommitMsg)
+        }
+        maybeBlameIgnoreCommit <- gitAlg
+          .checkIgnore(repo, pathAsString)
+          .ifM(
+            logger
+              .warn(s"Impossible to add '$pathAsString' because it is git ignored.")
+              .as(Option.empty[Commit]),
+            addAndCommit
+          )
       } yield maybeBlameIgnoreCommit
     } else F.pure(None)
 }
@@ -106,6 +121,7 @@ object HookExecutor {
     (GroupId("com.codecommit"), ArtifactId("sbt-spiewak")),
     (GroupId("com.codecommit"), ArtifactId("sbt-spiewak-sonatype")),
     (GroupId("com.codecommit"), ArtifactId("sbt-spiewak-bintray")),
+    (GroupId("com.github.sbt"), ArtifactId("sbt-github-actions")),
     (GroupId("io.chrisdavenport"), ArtifactId("sbt-davenverse")),
     (GroupId("io.github.nafg.mergify"), ArtifactId("sbt-mergify-github-actions")),
     (GroupId("org.typelevel"), ArtifactId("sbt-typelevel-ci-release")),
@@ -114,6 +130,7 @@ object HookExecutor {
   )
 
   private val sbtTypelevelModules = List(
+    (GroupId("io.circe"), ArtifactId("sbt-circe-org")),
     (GroupId("org.typelevel"), ArtifactId("sbt-typelevel")),
     (GroupId("org.http4s"), ArtifactId("sbt-http4s-org")),
     (GroupId("edu.gemini"), ArtifactId("sbt-lucuma")),
@@ -123,7 +140,7 @@ object HookExecutor {
 
   // Modules that most likely require the workflow to be regenerated if updated.
   private val conditionalSbtGitHubWorkflowGenerateModules =
-    (sbtGroupId, sbtArtifactId) :: (sbtScalaFixGroupId, sbtScalaFixArtifactId) :: scalaLangModules
+    (sbtGroupId, sbtArtifactId) :: (sbtScalafixGroupId, sbtScalafixArtifactId) :: scalaLangModules
 
   private def sbtGithubWorkflowGenerateHook(
       groupId: GroupId,

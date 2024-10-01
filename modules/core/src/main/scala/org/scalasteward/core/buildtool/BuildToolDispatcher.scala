@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,23 +21,29 @@ import cats.syntax.all._
 import org.scalasteward.core.buildtool.maven.MavenAlg
 import org.scalasteward.core.buildtool.mill.MillAlg
 import org.scalasteward.core.buildtool.sbt.SbtAlg
-import org.scalasteward.core.data.Scope
+import org.scalasteward.core.buildtool.scalacli.ScalaCliAlg
+import org.scalasteward.core.data.{Repo, Scope}
 import org.scalasteward.core.edit.scalafix.ScalafixMigration
 import org.scalasteward.core.repoconfig.RepoConfig
 import org.scalasteward.core.scalafmt.ScalafmtAlg
-import org.scalasteward.core.vcs.data.{BuildRoot, Repo}
+import org.typelevel.log4cats.Logger
 
 final class BuildToolDispatcher[F[_]](implicit
+    logger: Logger[F],
     mavenAlg: MavenAlg[F],
     millAlg: MillAlg[F],
     sbtAlg: SbtAlg[F],
+    scalaCliAlg: ScalaCliAlg[F],
     scalafmtAlg: ScalafmtAlg[F],
     F: Monad[F]
 ) {
   def getDependencies(repo: Repo, repoConfig: RepoConfig): F[List[Scope.Dependencies]] =
     getBuildRootsAndTools(repo, repoConfig).flatMap(_.flatTraverse { case (buildRoot, buildTools) =>
       for {
-        dependencies <- buildTools.flatTraverse(_.getDependencies(buildRoot))
+        dependencies <- buildTools.flatTraverse { buildTool =>
+          logger.info(s"Get dependencies in ${buildRoot.relativePath} from ${buildTool.name}") >>
+            buildTool.getDependencies(buildRoot)
+        }
         maybeScalafmtDependency <- scalafmtAlg.getScopedScalafmtDependency(buildRoot)
       } yield Scope.combineByResolvers(maybeScalafmtDependency.toList ::: dependencies)
     })
@@ -47,10 +53,7 @@ final class BuildToolDispatcher[F[_]](implicit
       buildTools.traverse_(_.runMigration(buildRoot, migration))
     })
 
-  private def getBuildRoots(repo: Repo, repoConfig: RepoConfig): List[BuildRoot] =
-    repoConfig.buildRootsOrDefault.map(buildRootCfg => BuildRoot(repo, buildRootCfg.relativePath))
-
-  private val allBuildTools = List(mavenAlg, millAlg, sbtAlg)
+  private val allBuildTools = List(mavenAlg, millAlg, sbtAlg, scalaCliAlg)
   private val fallbackBuildTool = List(sbtAlg)
 
   private def findBuildTools(buildRoot: BuildRoot): F[(BuildRoot, List[BuildToolAlg[F]])] =
@@ -63,5 +66,5 @@ final class BuildToolDispatcher[F[_]](implicit
       repo: Repo,
       repoConfig: RepoConfig
   ): F[List[(BuildRoot, List[BuildToolAlg[F]])]] =
-    getBuildRoots(repo, repoConfig).traverse(findBuildTools)
+    repoConfig.buildRootsOrDefault(repo).traverse(findBuildTools)
 }

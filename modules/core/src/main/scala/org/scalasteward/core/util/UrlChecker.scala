@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ object UrlChecker {
       CaffeineCache(cache)
     }
 
-  def create[F[_]](config: Config)(implicit
+  def create[F[_]](config: Config, modify: Request[F] => F[Request[F]])(implicit
       urlCheckerClient: UrlCheckerClient[F],
       logger: Logger[F],
       F: Sync[F]
@@ -59,7 +59,8 @@ object UrlChecker {
 
         private def status(url: Uri): F[Status] =
           statusCache.cachingF(url.renderString)(None) {
-            urlCheckerClient.client.status(Request[F](method = Method.HEAD, uri = url))
+            val req = Request[F](method = Method.HEAD, uri = url)
+            modify(req).flatMap(urlCheckerClient.client.status)
           }
       }
     }

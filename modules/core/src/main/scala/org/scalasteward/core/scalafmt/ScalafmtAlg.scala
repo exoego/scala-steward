@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,15 +20,15 @@ import cats.Monad
 import cats.data.OptionT
 import cats.syntax.all._
 import io.circe.ParsingFailure
-import org.scalasteward.core.application.Config
-import org.scalasteward.core.data.{Scope, Version}
+import org.scalasteward.core.buildtool.BuildRoot
+import org.scalasteward.core.data.{Resolver, Scope, Version}
+import org.scalasteward.core.io.process.SlurpOptions
 import org.scalasteward.core.io.{FileAlg, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.scalafmt.ScalafmtAlg.{opts, parseScalafmtConf}
 import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.data.{BuildRoot, Repo}
 import org.typelevel.log4cats.Logger
 
-final class ScalafmtAlg[F[_]](config: Config)(implicit
+final class ScalafmtAlg[F[_]](defaultResolver: Resolver)(implicit
     fileAlg: FileAlg[F],
     logger: Logger[F],
     processAlg: ProcessAlg[F],
@@ -48,13 +48,15 @@ final class ScalafmtAlg[F[_]](config: Config)(implicit
 
   def getScopedScalafmtDependency(buildRoot: BuildRoot): F[Option[Scope.Dependencies]] =
     OptionT(getScalafmtVersion(buildRoot))
-      .map(version => Scope(List(scalafmtDependency(version)), List(config.defaultResolver)))
+      .map(version => Scope(List(scalafmtDependency(version)), List(defaultResolver)))
       .value
 
-  def reformatChanged(repo: Repo): F[Unit] = {
-    val cmd = Nel.of(scalafmtBinary, opts.nonInteractive) ++ opts.modeChanged
-    workspaceAlg.repoDir(repo).flatMap(processAlg.exec(cmd, _)).void
-  }
+  def reformatChanged(buildRoot: BuildRoot): F[Unit] =
+    for {
+      buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
+      cmd = Nel.of(scalafmtBinary, opts.nonInteractive) ++ opts.modeChanged
+      _ <- processAlg.exec(cmd, buildRootDir, slurpOptions = SlurpOptions.ignoreBufferOverflow)
+    } yield ()
 
   def version: F[String] = {
     val cmd = Nel.of(scalafmtBinary, opts.version)
@@ -64,7 +66,7 @@ final class ScalafmtAlg[F[_]](config: Config)(implicit
 
 object ScalafmtAlg {
   object opts {
-    val modeChanged = List("--mode", "changed")
+    val modeChanged: List[String] = List("--mode", "changed")
     val nonInteractive = "--non-interactive"
     val version = "--version"
   }

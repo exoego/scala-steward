@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 Scala Steward contributors
+ * Copyright 2018-2023 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 package org.scalasteward.core.repoconfig
 
-import cats.{Eq, Monoid}
 import cats.implicits._
+import cats.{Eq, Monoid}
 import io.circe.Codec
 import io.circe.generic.extras.Configuration
 import io.circe.generic.extras.semiauto.deriveConfiguredCodec
@@ -28,7 +28,8 @@ import scala.util.matching.Regex
 final case class PullRequestsConfig(
     frequency: Option[PullRequestFrequency] = None,
     grouping: List[PullRequestGroup] = Nil,
-    includeMatchedLabels: Option[Regex] = None
+    includeMatchedLabels: Option[Regex] = None,
+    customLabels: List[String] = Nil
 ) {
   def frequencyOrDefault: PullRequestFrequency =
     frequency.getOrElse(PullRequestsConfig.defaultFrequency)
@@ -58,7 +59,8 @@ object PullRequestsConfig {
         PullRequestsConfig(
           frequency = x.frequency.orElse(y.frequency),
           grouping = x.grouping |+| y.grouping,
-          includeMatchedLabels = x.includeMatchedLabels.orElse(y.includeMatchedLabels)
+          includeMatchedLabels = x.includeMatchedLabels.orElse(y.includeMatchedLabels),
+          customLabels = x.customLabels |+| y.customLabels
         )
     )
 }
